@@ -15,6 +15,13 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Read-only private SRAM snapshot for exact-build GUI analysis.
+    InspectGui {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Verify a known healthy application before requesting native DFU. No flash write.
     EnterDfu {
         #[arg(long)]
@@ -78,6 +85,13 @@ async fn main() -> Result<()> {
     }
     let s = bundle::stock(&args.stock)?;
     match args.command {
+        Command::InspectGui {
+            bundle: path,
+            output,
+        } => {
+            let b = bundle::audit(&s, &args.stock, &path)?;
+            device::inspect_gui(&s, &b, &output).await?;
+        }
         Command::EnterDfu {
             bundle: path,
             output,

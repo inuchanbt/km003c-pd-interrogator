@@ -140,6 +140,39 @@ pub async fn check(s: &Stock, b: &Bundle, output: &Path) -> Result<()> {
     Ok(())
 }
 
+pub async fn inspect_gui(s: &Stock, b: &Bundle, output: &Path) -> Result<()> {
+    new_evidence(output)?;
+    let mut session = open(s, false).await?;
+    ensure!(
+        session.mode == FirmwareUsbMode::Application,
+        "GUI snapshot requires the known application, not DFU"
+    );
+    let before = snapshot(&mut session, s, output, "before-gui").await?;
+    ensure!(
+        state(&before.internal, s, b) != "unknown-within-write-span",
+        "Unknown application; no GUI interpretation allowed"
+    );
+    let ram = session.reader.read(0x1fff8000, 0x2f000).await?;
+    backup::save(&output.join("sram.bin"), &ram)?;
+    let at = (0x2001a8d0u32 - 0x1fff8000) as usize;
+    let pool = u32::from_le_bytes(ram[at..at + 4].try_into()?);
+    ensure!(
+        (0x1fff8000..=0x2001f000).contains(&pool),
+        "LVGL heap pointer outside supported SRAM"
+    );
+    let heap = session.reader.read(pool, 0x8000).await?;
+    backup::save(&output.join("lvgl-heap.bin"), &heap)?;
+    backup::save_json(
+        &output.join("gui-snapshot.json"),
+        &json!({"schema":1,"read_only":true,
+        "state":state(&before.internal,s,b),"sram_base":0x1fff8000u32,"sram_bytes":ram.len(),
+        "lvgl_heap_base":pool,"lvgl_heap_bytes":heap.len(),"atomic_snapshot":false,
+        "private_ram_must_not_be_published":true}),
+    )?;
+    println!("Private GUI SRAM/heap snapshot saved; no flash, mode switch or PD command sent.");
+    Ok(())
+}
+
 pub async fn enter_dfu(s: &Stock, b: &Bundle, output: &Path) -> Result<()> {
     new_evidence(output)?;
     let mut session = open(s, false).await?;

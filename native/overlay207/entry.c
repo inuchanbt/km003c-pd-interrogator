@@ -1,11 +1,12 @@
-/* SPDX-License-Identifier: MIT
- * First integration probe: preserve the stock handler on every GUI tick.
- * QR APIs are linked and checked, but this probe does not create a QR screen. */
+/* SPDX-License-Identifier: MIT */
 #include "kpd.h"
 #include "profile.h"
 
+void kpd207_gui_screen_tick(void);
+
 void kpd207_gui_tick(void) {
     ((void (*)(void))(uintptr_t)KPD207_STOCK_HANDLER)();
+    kpd207_gui_screen_tick();
 }
 
 struct kpd207_header {

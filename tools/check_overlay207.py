@@ -58,6 +58,8 @@ def main():
         cpu.mem_write(o.GUI_LOOP, o.LOOP_AFTER)
         # Native LVGL handler is a stub; only overlay/control flow is executed.
         cpu.mem_write(o.GUI_HANDLER - 1, bytes.fromhex('7047'))  # BX LR
+        # No native display exists in this stock-free control-flow model.
+        cpu.mem_write(0x2a6fe, bytes.fromhex('00207047'))  # MOVS R0,0; BX LR
         stack, argument = 0x20026000, 0x12345678
         cpu.reg_write(UC_ARM_REG_SP, stack)
         cpu.reg_write(UC_ARM_REG_LR, 0x101)
