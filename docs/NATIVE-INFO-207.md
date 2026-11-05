@@ -4,7 +4,7 @@
 純正の送信経路を使って追加情報を順に要求します。
 対象1個体への適用・起動と、全内部領域／loader／校正領域の照合まで確認済みです。
 追加GETでRevision / Source Capabilities Extended / Source Info / Status / Manufacturer / Source Identityの
-6項目を実機取得しました。完了時のPDO・ID保持を追加した候補を準備中です。
+6項目を実機取得し、完了時のPDO・ID保持も終了操作の前後で一致を確認しました。
 以下の詳細な異常系試験はオフラインです。
 
 ## 操作
@@ -51,6 +51,7 @@ PDO待ちには6秒、送信確認または応答待ちには1.2秒の期限を�
 - 送信は純正 `pd data=` と同じ `0x3f668` へ、SOP・ヘッダー・ペイロードを渡します。
   この関数は即座にコピーしてイベント通知し、純正Policy Engine/PHYが送信します。
   MessageID、GoodCRC、再送、物理バスは純正が管理します。
+  Manufacturer要求では純正のChunked=1／chunk 0も許可し、Target/Refとそのゼロ余白を検査します。
 - 純正 `0xecfc` が残す320バイトの循環履歴を読み取ります。USB用consumer cursorは変更しません。
 - 生履歴の累積16bitカウンターと物理位置を別々に保持し、カウンター周回にも対応します。
   書込み中フラグ、位置と累積差分の対応、コピー前後のメタデータ一致を確認します。
@@ -86,5 +87,9 @@ python tools/check_info207.py --stock <private-stock-app.bin> --build artifacts/
 ```
 
 純正ROM/RAMを用いたGUI検証、専用loaderの2セクター消去範囲、全内部領域の2段階復元モデルも確認します。
-実機での追加GET・PDとGUIの共存・iPhone取込は別途確認します。
+実機での検証では、PCから純正PDMの開始・終了だけを行い、追加GETは本体が実行しました。
+6要求の成功、終了後の全結果・ID保持、VBUS復帰を確認しました。
+取得中のQR待機画面はARM試験で確認済みです。
+追加情報版は、利用者が本体QR全5枚の表示、iPhoneでの5/5枚取込、Exit後の再表示を確認しました。
+提示画像でも追加6項目の取得成功、SPR/EPR AVS、ケーブルIdentityの受信記録を確認できました。
 短時間の抜き差しや任意の電源に対する世代判定・通信適合性を保証するものではありません。
