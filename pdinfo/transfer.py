@@ -4,12 +4,14 @@ import binascii
 import re
 import struct
 import zlib
+from urllib.parse import urlsplit, unquote
 
 from .model import FIELDS, STATES, ORIGINS, CAPTURE_STATES, new_snapshot, set_field, validate
 
 PAGE_BYTES = 152  # Version 8 / M, byte mode; includes the ASCII envelope.
 CHUNK_BYTES = 81  # 108 base64 characters + 37-character envelope = 145 bytes.
 MAX_PAGES = 64
+DEFAULT_IMPORT_URL = 'https://inuchanbt.github.io/km003c-pd-interrogator/'
 PAGE_RE = re.compile(r'^KPD1:([0-9a-f]{16}):([0-9]{2})/([0-9]{2}):([0-9A-F]{8}):([A-Za-z0-9_-]+)$')
 
 
@@ -55,13 +57,45 @@ def unpack(data):
     return snapshot
 
 
-def encode_pages(snapshot):
+def normalize_page(text):
+    text = text.strip()
+    if len(text) > 2048:
+        raise ValueError('QR text is too long')
+    if re.match(r'https?://', text, re.I):
+        url = urlsplit(text)
+        if not url.netloc or url.username or url.password or not url.fragment:
+            raise ValueError('Invalid importer URL')
+        text = unquote(url.fragment, encoding='ascii', errors='strict')
+    return text
+
+
+def importer_prefix(base_url):
+    if base_url is None:
+        return ''
+    if not isinstance(base_url, str) or not base_url.isascii() or any(c.isspace() for c in base_url):
+        raise ValueError('Importer URL must be an ASCII HTTPS URL')
+    url = urlsplit(base_url)
+    local = url.hostname in ('localhost', '127.0.0.1', '[::1]', '::1')
+    if (url.scheme != 'https' and not (url.scheme == 'http' and local)
+            or not url.netloc or url.username or url.password or url.query or url.fragment
+            or '#' in base_url or '?' in base_url):
+        raise ValueError('Use an HTTPS importer URL without credentials, query, or fragment')
+    return base_url + '#'
+
+
+def encode_pages(snapshot, base_url=None):
     data = pack(snapshot)
     checksum = f'{zlib.crc32(data):08X}'
-    chunks = [data[i:i + CHUNK_BYTES] for i in range(0, len(data), CHUNK_BYTES)]
+    prefix = importer_prefix(base_url)
+    # Keep the complete URL within Version 8/M's 152-byte budget.
+    available = PAGE_BYTES - len(prefix) - 37
+    chunk_bytes = min(CHUNK_BYTES, available * 3 // 4)
+    if chunk_bytes < 1:
+        raise ValueError('Importer URL is too long for a device-size QR')
+    chunks = [data[i:i + chunk_bytes] for i in range(0, len(data), chunk_bytes)]
     if len(chunks) > MAX_PAGES:
         raise ValueError('Snapshot exceeds transfer page limit')
-    pages = [f'KPD1:{snapshot["measurement_id"]}:{i:02}/{len(chunks):02}:{checksum}:'
+    pages = [prefix + f'KPD1:{snapshot["measurement_id"]}:{i:02}/{len(chunks):02}:{checksum}:'
              + base64.urlsafe_b64encode(chunk).decode('ascii').rstrip('=')
              for i, chunk in enumerate(chunks, 1)]
     assert all(len(page.encode('ascii')) <= PAGE_BYTES for page in pages)
@@ -71,7 +105,7 @@ def encode_pages(snapshot):
 def decode_pages(pages):
     identity, chunks = None, {}
     for text in pages:
-        text = text.strip()
+        text = normalize_page(text)
         if len(text) > PAGE_BYTES or not (match := PAGE_RE.fullmatch(text)):
             raise ValueError('Invalid QR page')
         mid, index, total, checksum, encoded = match.groups()

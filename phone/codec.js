@@ -19,6 +19,12 @@
   function parsePage(text) {
     if (typeof text !== 'string') throw Error('QRテキストを入力してください');
     text = text.trim();
+    if(text.length>2048)throw Error('QRテキストが長すぎます');
+    if(/^https?:\/\//i.test(text)){
+      let url;try{url=new URL(text);}catch{throw Error('取込URLが不正です');}
+      if(!url.hostname||url.username||url.password||!url.hash)throw Error('取込URLが不正です');
+      try{text=decodeURIComponent(url.hash.slice(1));}catch{throw Error('取込URLのデータが壊れています');}
+    }
     const m = /^KPD1:([0-9a-f]{16}):([0-9]{2})\/([0-9]{2}):([0-9A-F]{8}):([A-Za-z0-9_-]+)$/.exec(text);
     if (!m || text.length > 152) throw Error('対応するKPD1形式ではありません');
     const [,id,part,count,crc,encoded] = m, index=Number(part), total=Number(count);

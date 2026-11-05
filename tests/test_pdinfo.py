@@ -65,6 +65,23 @@ class ModelTests(unittest.TestCase):
 
 
 class TransferTests(unittest.TestCase):
+    def test_url_pages_fit_device_budget_and_restore_same_data(self):
+        original=snapshot()
+        pages=transfer.encode_pages(original,base_url=transfer.DEFAULT_IMPORT_URL)
+        self.assertTrue(all(p.startswith(transfer.DEFAULT_IMPORT_URL+'#KPD1:') for p in pages))
+        self.assertTrue(all(len(p.encode('ascii'))<=152 for p in pages))
+        self.assertEqual(transfer.decode_pages(list(reversed(pages)))['fields'],original['fields'])
+        self.assertEqual(transfer.decode_pages([transfer.normalize_page(p) for p in pages])['fields'],original['fields'])
+    def test_url_validation_and_encoded_fragments(self):
+        from urllib.parse import quote
+        raw=transfer.encode_pages(snapshot())
+        wrapped=['https://example.test/import#'+quote(p,safe='') for p in raw]
+        self.assertEqual(transfer.decode_pages(wrapped)['fields'],snapshot()['fields'])
+        for base in ('javascript:alert(1)','https://user:pass@example.test/','https://example.test/#x',
+                     'https://example.test/?x=1','http://example.test/','https://example.test/'+'x'*180):
+            with self.subTest(base=base),self.assertRaises(ValueError):transfer.encode_pages(snapshot(),base_url=base)
+        local=transfer.encode_pages(snapshot(),base_url='http://localhost:8767/')
+        self.assertEqual(transfer.decode_pages(local)['fields'],snapshot()['fields'])
     def test_roundtrip_reverse_order_and_duplicates(self):
         original=snapshot();pages=transfer.encode_pages(original)
         restored=transfer.decode_pages(list(reversed(pages))+pages)
@@ -235,6 +252,7 @@ class CLITests(unittest.TestCase):
             self.assertEqual(a['fields'],b['fields']);self.assertEqual(b['origin'],'demo')
             self.assertIn('width="240"',(out/'qr/qr-01.svg').read_text())
             self.assertEqual(len((out/'qr/qr-01.bin').read_bytes()),301)
+            self.assertTrue((out/'qr/pages.txt').read_text().startswith(transfer.DEFAULT_IMPORT_URL+'#'))
             self.assertEqual(self.execute(['demo','--output',str(out)]),1)
     def test_dry_run_has_no_hardware_or_output(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -250,6 +268,11 @@ class CLITests(unittest.TestCase):
             self.assertEqual(self.execute(['replay',str(source),'--output',str(root/'out')]),0)
             snap=json.loads((root/'out/snapshot.json').read_text())
             self.assertEqual(snap['fields']['revision']['decoded']['pd_revision'],'3.1')
+    def test_legacy_raw_qr_remains_available(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'demo'
+            self.assertEqual(self.execute(['demo','--output',str(root),'--qr','--qr-format','raw']),0)
+            self.assertTrue((root/'qr/pages.txt').read_text().startswith('KPD1:'))
 
 
 class PhoneTests(unittest.TestCase):
@@ -261,16 +284,18 @@ class PhoneTests(unittest.TestCase):
             model.set_field(snap,'manufacturer','observed',bytes.fromhex('34127856')+'試験電源'.encode())
             model.set_field(snap,'cable_identity','observed',struct.pack('<5I',0xff00a041,1,2,3,4))
             model.set_field(snap,'source_cap_ext','observed',bytes(range(25)))
-            vectors.append(dict(snapshot=snap,pages=transfer.encode_pages(snap)))
+            vectors.append(dict(snapshot=snap,pages=transfer.encode_pages(snap),
+                                url_pages=transfer.encode_pages(snap,base_url=transfer.DEFAULT_IMPORT_URL)))
         actual=model.new_snapshot('km003c','0000000000000006')
         actual['capture_status']='imported'
         collector=Collector(actual)
         for row in json.loads((ROOT/'tests/fixtures/stock-pd32-events.json').read_text()):collector.feed(row)
-        vectors.append(dict(snapshot=actual,pages=transfer.encode_pages(actual)))
+        vectors.append(dict(snapshot=actual,pages=transfer.encode_pages(actual),
+                            url_pages=transfer.encode_pages(actual,base_url=transfer.DEFAULT_IMPORT_URL)))
         images=[]
         with tempfile.TemporaryDirectory(dir=ROOT/'artifacts') as folder:
-            path=Path(folder)/'qr';transfer.write_qr(vectors[0]['pages'],path)
-            for i,text in enumerate(vectors[0]['pages'],1):
+            path=Path(folder)/'qr';transfer.write_qr(vectors[-1]['url_pages'],path)
+            for i,text in enumerate(vectors[-1]['url_pages'],1):
                 images.append(dict(text=text,packed=base64.b64encode((path/f'qr-{i:02}.bin').read_bytes()).decode()))
         completed=subprocess.run(['node',str(ROOT/'tests/check_phone.cjs')],
                                  input=json.dumps(dict(vectors=vectors,images=images)),

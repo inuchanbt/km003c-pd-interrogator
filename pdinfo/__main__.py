@@ -8,7 +8,7 @@ import sys
 from .ch32 import import_log
 from .events import Collector
 from .model import new_snapshot, set_field, validate
-from .transfer import encode_pages, decode_pages, write_qr
+from .transfer import DEFAULT_IMPORT_URL, importer_prefix, encode_pages, decode_pages, write_qr
 
 
 def positive_float(value):
@@ -50,20 +50,25 @@ def parser():
         command.add_argument('--output', type=Path, required=True, help='new output directory')
         if command is not qr:
             command.add_argument('--qr', action='store_true')
+    for command in (live, ch32, replay, qr, decode, demo):
+        command.add_argument('--qr-format', choices=('url', 'raw'), default='url',
+                             help='URL for iPhone Camera/Safari (default), or legacy raw KPD1 text')
+        command.add_argument('--import-url', default=DEFAULT_IMPORT_URL,
+                             help='HTTPS importer address used by URL QR export')
     serve = sub.add_parser('serve', help='serve the local phone importer (no uploads or remote services)')
     serve.add_argument('--bind', default='127.0.0.1', help='use 0.0.0.0 to allow a phone on the same LAN')
     serve.add_argument('--port', type=int, default=8767)
     return p
 
 
-def save(snapshot, directory, qr=False):
+def save(snapshot, directory, qr=False, base_url=DEFAULT_IMPORT_URL):
     validate(snapshot)
     # Rebuild decoded fields from raw so stale cached JSON does not become evidence.
     for name, field in list(snapshot['fields'].items()):
         set_field(snapshot, name, field['status'], bytes.fromhex(field['raw']) if 'raw' in field else None)
     (directory / 'snapshot.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     if qr:
-        write_qr(encode_pages(snapshot), directory / 'qr')
+        write_qr(encode_pages(snapshot, base_url=base_url), directory / 'qr')
     print(f'Saved: {directory.resolve() / "snapshot.json"}')
 
 
@@ -122,6 +127,8 @@ def main(argv=None):
             snapshot = None
         # Fail before opening hardware if QR dependencies are unavailable.
         if args.command == 'export-qr' or args.qr:
+            if args.qr_format == 'url':
+                importer_prefix(args.import_url)
             try:
                 import qrcode  # noqa: F401
             except ImportError as exc:
@@ -130,12 +137,13 @@ def main(argv=None):
         if args.command == 'capture':
             from .live import capture
             snapshot, failure = capture(args, args.output)
-            save(snapshot, args.output, args.qr)
+            save(snapshot, args.output, args.qr, args.import_url if args.qr_format == 'url' else None)
             if failure:
                 print('Capture did not complete: ' + (str(failure) or 'Interrupted'), file=sys.stderr)
                 return 130 if isinstance(failure, KeyboardInterrupt) else 1
         else:
-            save(snapshot, args.output, args.command == 'export-qr' or args.qr)
+            save(snapshot, args.output, args.command == 'export-qr' or args.qr,
+                 args.import_url if args.qr_format == 'url' else None)
         return 0
     except KeyboardInterrupt:
         return 130
