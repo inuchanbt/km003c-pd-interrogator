@@ -42,6 +42,8 @@ def main():
                ('native/overlay207/gate.c', 'gate', False),
                ('native/overlay207/entry.c', 'entry', True),
                ('native/overlay207/gui.c', 'gui', True),
+               ('native/overlay207/capture.c', 'capture', True),
+               ('native/overlay207/acquire.c', 'acquire', True),
                ('native/kpd.c', 'kpd', True), ('native/runtime.c', 'runtime', True),
                ('native/vendor/qrcodegen/qrcodegen.c', 'qrcodegen', True)]
     objects = []
@@ -51,7 +53,7 @@ def main():
         objects.append(str(obj))
     elf = args.output / 'overlay207-offline.elf'
     # Keep compiler-generated runtime references alive through LTO codegen.
-    runtime = ['memcpy', 'memset', 'memmove', '__aeabi_memclr4']
+    runtime = ['memcpy', 'memset', 'memmove', '__aeabi_memclr4', '__aeabi_memcpy', '__aeabi_memcpy4']
     subprocess.run([*common, '-flto', '-nostdlib', '-fuse-ld=lld', '-Wl,--gc-sections',
                     '-Wl,-T,' + str(ROOT / 'native/overlay207/layout.ld'),
                     '-Wl,-Map=' + str(args.output / 'overlay207.map'),
@@ -73,7 +75,7 @@ def main():
     struct.pack_into('<I', tail, 16, zlib.crc32(tail))
     for name, data in [('gate.bin', gate), ('extension.bin', tail)]:
         (args.output / name).write_bytes(data)
-    report = dict(schema=1, purpose='native QR GUI demo; no live PD acquisition or installer',
+    report = dict(schema=1, purpose='native owned PDO capture and QR GUI; no additional GET requests or installer',
                   gate_address='0x738c0', gate_bytes=len(gate),
                   extension_address='0x74000', extension_bytes=len(tail),
                   extension_sha256=hashlib.sha256(tail).hexdigest(),

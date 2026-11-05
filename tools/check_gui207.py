@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--build', type=Path, default=ROOT / 'artifacts/overlay207')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--trace-stack', action='store_true', help='Slower native basic-block stack observation')
+    parser.add_argument('--rng-mode', choices=('complete', 'timeout', 'busy', 'zero'), default='complete')
     args = parser.parse_args()
     if not args.output.resolve().is_relative_to((ROOT / 'artifacts').resolve()):
         parser.error('Private output must stay inside ignored artifacts/')
@@ -47,11 +48,17 @@ def main():
     cpu.mem_map(0x21000000, 0x10000)  # Isolated emulator stack, never device RAM.
     cpu.mem_map(0x42a70000, 0x1000)  # Read-only GPIO aliases in the callback.
     cpu.mem_map(0x40049000, 0x1000)  # Native reader's unlock-register writes.
+    cpu.mem_map(0x40048000, 0x1000)  # Real native FCG0 helper, model register storage.
+    cpu.mem_map(0x40041000, 0x1000)  # TRNG model (no claim of emulated entropy).
+    initial_clock = 0xffffffff if args.rng_mode != 'busy' else 0xffffffff ^ (1 << 22)
+    cpu.mem_write(0x40048000, struct.pack('<I', initial_clock))
+    if args.rng_mode == 'busy': cpu.mem_write(0x40041000, struct.pack('<I', 1))
     symbols = load_elf(cpu, (args.build / 'overlay207-offline.elf').read_bytes())
     cpu.mem_write(0x39a18, bytes.fromhex('7047'))  # Only RTOS/display handler stub.
     cpu.mem_write(0x468c2, bytes.fromhex('00207047'))  # Hardware wake/orientation: awake.
     cpu.mem_write(0x1fffba0c, b'\0')
     recent, low_sp = [], [0x21010000]
+    random_round = 0
 
     def trace(uc, address, size, user):
         recent.append(address)
@@ -60,6 +67,7 @@ def main():
     if args.trace_stack: cpu.hook_add(UC_HOOK_BLOCK, trace)
 
     def call(address, *arguments):
+        nonlocal random_round
         cpu.reg_write(UC_ARM_REG_SP, 0x2100fff0)
         cpu.reg_write(UC_ARM_REG_LR, 0x101)
         for reg, value in zip((UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3), arguments):
@@ -74,6 +82,12 @@ def main():
             raise RuntimeError(f'Native GUI did not return near {[hex(x) for x in recent]}')
         if cpu.reg_read(UC_ARM_REG_SP) != 0x2100fff0:
             raise AssertionError('Stack not restored')
+        if args.rng_mode in ('complete', 'zero') and bytes(cpu.mem_read(0x40041000, 4)) == struct.pack('<I', 3):
+            # A hardware completion between ticks; test values are deterministic.
+            random_round += 1
+            cpu.mem_write(0x40041000, struct.pack('<I', 1))
+            values = (0, 0) if args.rng_mode == 'zero' else (0x12345600 + random_round, 0x89abcdef)
+            cpu.mem_write(0x4004100c, struct.pack('<II', *values))
         return cpu.reg_read(UC_ARM_REG_R0)
 
     def word(address):
@@ -95,7 +109,15 @@ def main():
     original_group = word(input_device + 0x5c)
     original_reader = word(input_device + 4)
     if original_reader != 0x24607: raise AssertionError('Expected qualified native keypad')
+    cpu.mem_write(0x1fffba20, struct.pack('<I', 0))
     call(symbols['kpd207_gui_tick'])
+    for tick in range(1, 13):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', tick * 10))
+        call(symbols['kpd207_gui_tick'])
+    expected_rounds = 11 if args.rng_mode in ('complete', 'zero') else 0
+    expected_control = 1 if args.rng_mode == 'busy' else 0
+    if random_round != expected_rounds or word(0x40048000) != initial_clock or word(0x40041000) != expected_control or word(0x40041004) != 0:
+        raise AssertionError('TRNG warmup or register/clock restoration differs')
     layer = call(0x2a6fe, 0)
     reader = word(input_device + 4)
     if reader == original_reader: raise AssertionError('QR shortcut was not installed')
@@ -138,15 +160,59 @@ def main():
         raise AssertionError('Expected 240x240 indexed image')
     if word(input_device + 0x5c) == original_group:
         raise AssertionError('Native keypad did not enter QR group')
+    # No capture: it must be an informational screen, never a demo QR.
+    frozen = pixels - 2672 - 758
+    if cpu.mem_read(frozen + 2671, 1) != b'\0' or cpu.mem_read(frozen, 4) == b'KPD1':
+        raise AssertionError('Empty screen contains an invented QR capture')
+    call(0x2f4aa, word(input_device + 0x5c), 27)
+    call(symbols['kpd207_gui_tick'])
+    if args.rng_mode != 'complete':
+        if word(input_device + 0x5c) != original_group: raise AssertionError('RNG failure lost native keys')
+        print(f'TRNG {args.rng_mode}: bounded startup, original registers/clock, no invented QR, Exit and native keys passed.')
+        return
+
+    fixture = model.new_snapshot('km003c')
+    collector = __import__('pdinfo.events', fromlist=['Collector']).Collector(fixture)
+    for event in json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text()): collector.feed(event)
+    spr, epr = (bytes.fromhex(fixture['fields'][name]['raw']) for name in ('spr_pdos', 'epr_pdos'))
+    context = 0x20000004
+    cpu.mem_write(context + 0x29, b'\x24')
+    cpu.mem_write(context + 0x3d5, b'\x08\x02\x04')
+    cpu.mem_write(context + 0x10c, struct.pack('<H', 0x51a1))
+    cpu.mem_write(context + 0x52, struct.pack('<H', 0x8800 | len(epr)))
+    cpu.mem_write(context + 0xf0, spr)
+    cpu.mem_write(context + 0xa8, epr)
+    for now in (1000, 1020):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now))
+        call(symbols['kpd207_gui_tick'])
+    # End native detection, destroy its cache. Only the owned copy may survive.
+    cpu.mem_write(context + 0x29, b'\0')
+    cpu.mem_write(context + 0xa8, bytes([255]) * 44)
+    cpu.mem_write(context + 0xf0, bytes([255]) * 28)
+    call(symbols['kpd207_gui_tick'])
+    buttons((20, 19), 1100); buttons((20, 19), 1850)
+    call(symbols['kpd207_gui_tick']); buttons((), 1851)
+    image = call(0x34cd0, layer, 0)
+    source = call(0x30574, image)
+    header, size, pixels = struct.unpack('<III', cpu.mem_read(source, 12))
+    # Descriptor points to the screen_data pixels, after transfer and workspace.
+    frozen = pixels - 2672 - 758
+    binary_length = struct.unpack('<H', cpu.mem_read(frozen + 2668, 2))[0]
+    decoded = transfer.unpack(bytes(cpu.mem_read(frozen, binary_length)))
+    if decoded['origin'] != 'km003c' or decoded['fields']['spr_pdos']['raw'] != spr.hex().upper() or decoded['fields']['epr_pdos']['raw'] != epr.hex().upper():
+        raise AssertionError('Owned native capture was not frozen into the QR transfer')
+    for name in model.FIELDS:
+        if decoded['fields'][name]['status'] != ('observed' if name in ('spr_pdos', 'epr_pdos') else 'not_requested'):
+            raise AssertionError('Capture invented a response or request status')
     args.output.mkdir(parents=True, exist_ok=True)
     signal = word(image + 0x1c)
-    # Two-page demo: stable frames, right/left wrap and Exit ownership restoration.
+    # Three real PDO pages: forward/backward wrap, native decode, immutable copy.
     frames = []
     rasters = []
     decoder_free = []
-    for key in (19, 20, 20, 19):
+    for key in (19, 19, 19, 20, 20):
         frames.append(bytes(cpu.mem_read(pixels, size)))
-        if len(frames) <= 2:
+        if len(frames) <= 3:
             decoder = 0x21000100
             if call(0x2fe94, decoder, source, 0) != 1:
                 raise AssertionError('Native indexed decoder refused the image')
@@ -163,14 +229,13 @@ def main():
             rasters.append(raster)
         call(0x2f4aa, word(input_device + 0x5c), key)
         call(symbols['kpd207_gui_tick'])
-    if frames[0] != frames[2] or frames[1] != frames[3] or frames[0] == frames[1]:
+    if frames[0] != frames[3] or frames[2] != frames[4] or len(set(frames[:3])) != 3:
         raise AssertionError('Page navigation or frozen transfer changed')
-    if decoder_free[0] != decoder_free[1]:
+    if len(set(decoder_free)) != 1:
         raise AssertionError('Native indexed decoding leaks memory between pages')
-    for index, frame in enumerate(frames[:2], 1):
+    for index, frame in enumerate(frames[:3], 1):
         (args.output / f'page-{index}.indexed').write_bytes(frame)
-    demo = model.new_snapshot('demo', '44454d4f00000001')
-    urls = transfer.encode_pages(demo, transfer.DEFAULT_IMPORT_URL)
+    urls = transfer.encode_pages(decoded, transfer.DEFAULT_IMPORT_URL)
     images = [dict(text=url, rgb565=base64.b64encode(raw).decode()) for url, raw in zip(urls, rasters)]
     subprocess.run(['node', str(ROOT / 'tests/check_native.cjs')], input=json.dumps(images), text=True, check=True)
     call(0x2f4aa, word(input_device + 0x5c), 27)
@@ -203,7 +268,7 @@ def main():
         call(symbols['kpd207_gui_tick'])
         if word(input_device + 0x5c) != original_group or heap_free()[0] != after_close[0]:
             raise AssertionError('Repeated open/close leaked memory or input ownership')
-    print('Native LVGL QR open, indexed decoder, page navigation, Exit and idle passed.')
+    print('Native LVGL: owned SPR/EPR capture after cache destruction, all 3 QRs, navigation, Exit and idle passed.')
     print('Native keypad: individual keys, short chord, hold/timer wrap, allocation failure and 3 reopens passed.')
     if args.trace_stack: print(f'Observed stack depth {0x2100fff0-low_sp[0]} bytes.')
     print(f'Native heap free/largest: before {initial_free}, after Exit {after_close}.')

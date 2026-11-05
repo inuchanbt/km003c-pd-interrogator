@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: MIT
  * Exact stock-2.0.7/HW2.3 LVGL ABI. All storage belongs to the native heap.
- * This first screen exports an explicitly tagged DEMO, never live PD data.
+ * Export only the observer's owned, stable PDO result, never idle cache bytes.
  */
 #include "kpd.h"
+#include "acquire.h"
 #include <string.h>
 
 #define FN(address, result, ...) ((result (*)(__VA_ARGS__))(uintptr_t)((address) | 1u))
@@ -47,8 +48,13 @@ struct screen_state {
     keypad_cb keypad_read;
     uint32_t chord_since;
     bool chord, chord_fired;
+    struct kpd207_capture capture;
+    struct kpd207_random random;
 };
 _Static_assert(sizeof(struct image_descriptor) == 12, "ARM32 image descriptor");
+_Static_assert(offsetof(struct screen_state, capture) == 56 &&
+               offsetof(struct screen_state, random) == 236 && sizeof(struct screen_state) == 248,
+               "Update the private live-state inspector when the GUI ABI changes");
 
 static uint8_t anchor_signal(void *obj, uint8_t sign, void *param) {
     struct screen_state *s = obj_ext(obj);
@@ -101,34 +107,50 @@ static uint8_t image_signal(void *obj, uint8_t sign, void *param) {
     return s->image_signal(obj, sign, param);
 }
 
+static void text(struct screen_data *d, const char *str, unsigned x, unsigned y, unsigned scale) {
+    /* Three columns/five rows, top bit first. Code-native bitmap text. */
+    const char chars[] = "0123456789ACDEILNOPRSTUVX/ ";
+    const uint16_t glyphs[] = {0x7b6f,0x2c97,0x73e7,0x73cf,0x5bc9,0x79cf,0x79ef,0x7292,0x7bef,0x7bcf,
+        0x2bed,0x7927,0x6b6e,0x79a7,0x7497,0x4927,0x5ffd,0x7b6f,0x7be4,0x6bad,0x79cf,0x7492,0x5b6f,0x5b6a,0x5aad,0x12a4,0};
+    for (unsigned c = 0; str[c]; ++c) {
+        unsigned g = 0;
+        while (chars[g] && chars[g] != str[c]) ++g;
+        if (!chars[g]) continue;
+        for (unsigned yy = 0; yy < 5 * scale; ++yy)
+            for (unsigned xx = 0; xx < 3 * scale; ++xx)
+                if (glyphs[g] & (1u << (14 - yy / scale * 3 - xx / scale))) {
+                    unsigned px = x + c * 4 * scale + xx, py = y + yy;
+                    if (px < 240 && py < 240)
+                        d->pixels[8 + py * 30 + px / 8] |= (uint8_t)(0x80u >> (px % 8));
+                }
+    }
+}
+
 static bool render(struct screen_state *s) {
     struct screen_data *d = s->data;
     uint8_t row[480];
-    if (!kpd_encode_page(&d->transfer, s->page, &d->work)) return false;
     memset(d->pixels, 0, sizeof(d->pixels));
     memset(d->pixels, 255, 4); /* Native 32-bit palette: opaque white, black */
     d->pixels[7] = 255;
+    if (!d->transfer.ready) {
+        text(d, s->random.phase == 3 ? "ID ERROR" : "NO DATA", 58, 80, 4);
+        text(d, "RUN PD TEST", 34, 120, 4);
+        text(d, "EXIT CLOSE", 42, 170, 4);
+        return true;
+    }
+    if (!kpd_encode_page(&d->transfer, s->page, &d->work)) return false;
     for (unsigned y = 0; y < 240; ++y) {
         if (!kpd_qr_row(&d->work, y, row)) return false;
         for (unsigned x = 0; x < 240; ++x)
             if (row[x * 2] == 0)
                 d->pixels[8 + y * 30 + x / 8] |= (uint8_t)(0x80u >> (x % 8));
     }
-    /* Tiny label outside the complete 16-pixel quiet zone (rows 218..233).
-     * Three columns/five rows, MSB first: D E M O <page> / <total>. */
-    const uint16_t glyphs[] = {0x6b6e, 0x79cf, 0x7fed, 0x7b6f,
-                              0x2492, 0x73e7, 0x12a4};
-    const uint8_t text[] = {0, 1, 2, 3, 4, 6, 5};
-    for (unsigned c = 0; c < sizeof(text); ++c) {
-        unsigned glyph = text[c];
-        if (c == 4) glyph = s->page == 1 ? 4 : 5;
-        for (unsigned y = 0; y < 5; ++y)
-            for (unsigned x = 0; x < 3; ++x)
-                if (glyphs[glyph] & (1u << (14 - y * 3 - x))) {
-                    unsigned px = 106 + c * 4 + x;
-                    d->pixels[8 + (235 + y) * 30 + px / 8] |= (uint8_t)(0x80u >> (px % 8));
-                }
-    }
+    /* Text outside the complete quiet zone (rows 218..233). PDO captures
+     * have at most 3 pages; the frozen transfer supplies both digits. */
+    char label[] = "SAVED 1/1";
+    label[6] = (char)('0' + s->page);
+    label[8] = (char)('0' + d->transfer.pages);
+    text(d, label, 102, 235, 1);
     return true;
 }
 
@@ -141,14 +163,15 @@ static void close_screen(struct screen_state *s) {
     s->image = s->group = s->data = NULL;
 }
 
-static void open_demo(struct screen_state *s, void *layer) {
-    struct kpd_snapshot snapshot = { .id = {'D','E','M','O',0,0,0,1}, .origin = 2 };
+static void open_result(struct screen_state *s, void *layer) {
     if (!s->input) return;
     s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
     s->data = mem_alloc(sizeof(*s->data));
     if (!s->data) return;
     s->page = 1;
-    if (!kpd_freeze(&snapshot, &s->data->transfer) || !render(s)) goto failed;
+    memset(&s->data->transfer, 0, sizeof(s->data->transfer));
+    (void)kpd207_capture_freeze(&s->capture, &s->data->transfer);
+    if (!render(s)) goto failed;
     s->descriptor.header = 7u | (240u << 10) | (240u << 21); /* INDEXED_1BIT */
     s->descriptor.size = sizeof(s->data->pixels);
     s->descriptor.pixels = s->data->pixels;
@@ -188,12 +211,15 @@ void kpd207_gui_screen_tick(void) {
             *reader = keypad_read;
             break;
         }
-    } else if (s->pending) {
+    }
+    kpd207_acquire_tick(&s->capture, &s->random, tick_get());
+    if (s->pending) {
         uint8_t action = s->pending;
         s->pending = 0;
-        if (action == 4 && !s->data) { open_demo(s, layer); return; }
+        if (action == 4 && !s->data) { open_result(s, layer); return; }
         if (!s->data) return;
         if (action == 3) { close_screen(s); return; }
+        if (!s->data->transfer.ready) return;
         unsigned pages = s->data->transfer.pages;
         s->page = action == 1 ? s->page % pages + 1 : (s->page + pages - 2) % pages + 1;
         if (render(s)) obj_invalidate(s->image);

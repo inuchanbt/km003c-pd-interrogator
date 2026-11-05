@@ -36,6 +36,25 @@ class Workspace(C.Structure):
     _fields_ = [('url', C.c_char * 153), ('temp', U8 * 302), ('qr', U8 * 302), ('ready', C.c_bool)]
 
 
+class CacheSample(C.Structure):
+    _fields_ = [('phase', U8), ('sequence', U8 * 2), ('valid', U8), ('spr_length', U8),
+                ('epr_length', U8), ('spr', U8 * 28), ('epr', U8 * 44)]
+
+
+class CacheCapture(C.Structure):
+    _fields_ = [('candidate', CacheSample), ('result', CacheSample), ('id', U8 * 8),
+                ('next_id', U8 * 8), ('candidate_since', C.c_uint32), ('idle_sequence', C.c_uint16),
+                ('previous_phase', U8), ('flags', U8)]
+
+
+def cache_sample(phase=0x24, sequence=1, spr=b'\x2c\x91\x91\x0a', epr=b''):
+    sample = CacheSample(phase=phase, valid=1, spr_length=len(spr), epr_length=len(epr))
+    sample.sequence[:] = bytes([sequence & 255, sequence >> 8])
+    sample.spr[:len(spr)] = spr
+    sample.epr[:len(epr)] = epr
+    return sample
+
+
 def native_snapshot(snapshot):
     result = Snapshot()
     result.id[:] = bytes.fromhex(snapshot['measurement_id'])
@@ -64,6 +83,7 @@ class NativeTests(unittest.TestCase):
         args = [cc, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic', '-shared']
         args += ['-Wl,--export-all-symbols'] if sys.platform == 'win32' else ['-fPIC']
         args += ['-I', str(ROOT / 'native'), str(ROOT / 'native/kpd.c'),
+                 str(ROOT / 'native/overlay207/capture.c'),
                  str(ROOT / 'native/vendor/qrcodegen/qrcodegen.c'), '-o', str(binary)]
         compiled = subprocess.run(args, capture_output=True, text=True)
         if compiled.returncode:
@@ -75,10 +95,15 @@ class NativeTests(unittest.TestCase):
             'kpd_encode_page': [C.POINTER(Transfer), C.c_uint, C.POINTER(Workspace)],
             'kpd_qr_pack': [C.POINTER(Workspace), C.POINTER(U8)],
             'kpd_qr_row': [C.POINTER(Workspace), C.c_uint, C.POINTER(U8)],
+            'kpd207_capture_freeze': [C.POINTER(CacheCapture), C.POINTER(Transfer)],
         }
         for name, types in signatures.items():
             function = getattr(cls.dll, name)
             function.argtypes, function.restype = types, C.c_bool
+        cls.dll.kpd207_capture_seed.argtypes = [C.POINTER(CacheCapture), C.POINTER(U8)]
+        cls.dll.kpd207_capture_seed.restype = None
+        cls.dll.kpd207_capture_observe.argtypes = [C.POINTER(CacheCapture), C.POINTER(CacheSample), C.c_uint32]
+        cls.dll.kpd207_capture_observe.restype = None
 
     @classmethod
     def tearDownClass(cls):
@@ -94,6 +119,111 @@ class NativeTests(unittest.TestCase):
         self.assertTrue(self.dll.kpd_freeze(C.byref(source), C.byref(target)))
         self.assertEqual(bytes(target.binary[:target.length]), transfer.pack(snapshot))
         return target
+
+    def cache(self, seeded=True):
+        self.assertEqual(C.sizeof(CacheCapture), 180)
+        c = CacheCapture()
+        if seeded: self.dll.kpd207_capture_seed(C.byref(c), (U8 * 8)(*bytes.fromhex('1122334455667700')))
+        self.observe(c, cache_sample(phase=0, sequence=0), 0)
+        return c
+
+    def observe(self, capture, sample, now):
+        self.dll.kpd207_capture_observe(C.byref(capture), C.byref(sample), now)
+
+    def cache_freeze(self, capture):
+        out = Transfer()
+        success = self.dll.kpd207_capture_freeze(C.byref(capture), C.byref(out))
+        return transfer.unpack(bytes(out.binary[:out.length])) if success else None
+
+    def test_cache_requires_fresh_receive_and_two_stable_observations(self):
+        c = self.cache()
+        stale = cache_sample(sequence=0)
+        for now in (10, 100): self.observe(c, stale, now)
+        self.assertIsNone(self.cache_freeze(c))
+        fresh = cache_sample(sequence=1)
+        self.observe(c, fresh, 200)
+        self.observe(c, fresh, 219)
+        self.assertIsNone(self.cache_freeze(c))
+        self.observe(c, fresh, 220)
+        actual = self.cache_freeze(c)
+        self.assertEqual(actual['origin'], 'km003c')
+        self.assertEqual(actual['fields']['spr_pdos']['status'], 'observed')
+        self.assertEqual(actual['fields']['source_info']['status'], 'not_requested')
+
+    def test_cache_retains_owned_result_after_exit_and_new_session_rejects_old_bytes(self):
+        c = self.cache()
+        sample = cache_sample()
+        self.observe(c, sample, 10); self.observe(c, sample, 30)
+        first = self.cache_freeze(c)
+        # Native protocol-type changes during shutdown are not a new receive.
+        self.observe(c, cache_sample(phase=0x21), 31)
+        self.observe(c, sample, 32); self.observe(c, sample, 52)
+        self.assertEqual(self.cache_freeze(c), first)
+        idle = cache_sample(phase=0, sequence=1, spr=b'\xff'*4)
+        self.observe(c, idle, 60)
+        self.assertEqual(self.cache_freeze(c), first)
+        reset_counter = cache_sample(sequence=0)
+        for now in (61, 69): self.observe(c, reset_counter, now)
+        self.assertIsNone(self.cache_freeze(c))
+        for now in (70, 100): self.observe(c, sample, now)
+        self.assertIsNone(self.cache_freeze(c))
+        sample.sequence[0] = 2
+        self.observe(c, sample, 110); self.observe(c, sample, 130)
+        second = self.cache_freeze(c)
+        self.assertNotEqual(first['measurement_id'], second['measurement_id'])
+        self.assertEqual(first['fields'], second['fields'])
+
+    def test_cache_updates_id_for_new_payload_but_preserves_frozen_transfer(self):
+        c = self.cache()
+        sample = cache_sample()
+        self.observe(c, sample, 10); self.observe(c, sample, 30)
+        out = Transfer()
+        self.assertTrue(self.dll.kpd207_capture_freeze(C.byref(c), C.byref(out)))
+        before = bytes(out)
+        first = self.cache_freeze(c)
+        sample.spr[0] ^= 1
+        self.observe(c, sample, 31); self.observe(c, sample, 32)
+        self.assertEqual(self.cache_freeze(c), first)
+        sample.spr[0] ^= 1
+        sample.sequence[0] = 2
+        self.observe(c, sample, 40); self.observe(c, sample, 60)
+        self.assertEqual(self.cache_freeze(c), first)
+        sample.spr[0] ^= 1
+        self.observe(c, sample, 61); self.observe(c, sample, 81)
+        self.assertEqual(self.cache_freeze(c), first)
+        sample.sequence[0] = 3
+        self.observe(c, sample, 90); self.observe(c, sample, 110)
+        self.assertNotEqual(self.cache_freeze(c)['measurement_id'], first['measurement_id'])
+        self.assertEqual(bytes(out), before)
+
+    def test_cache_rejects_unstable_invalid_unseeded_and_unknown_states(self):
+        for phase in (0, 0x21, 0x23, 0xff):
+            c = self.cache()
+            s = cache_sample(phase=phase)
+            self.observe(c, s, 10); self.observe(c, s, 40)
+            self.assertIsNone(self.cache_freeze(c))
+        for spr_length, epr_length, valid in ((0,0,1),(29,0,1),(3,0,1),(4,45,1),(4,3,1),(4,0,0)):
+            c = self.cache(); s = cache_sample()
+            s.spr_length, s.epr_length, s.valid = spr_length, epr_length, valid
+            self.observe(c, s, 10); self.observe(c, s, 40)
+            self.assertIsNone(self.cache_freeze(c))
+        c = self.cache(seeded=False); s = cache_sample()
+        self.observe(c, s, 10); self.observe(c, s, 40)
+        self.assertIsNone(self.cache_freeze(c))
+        c = self.cache(); s = cache_sample()
+        self.observe(c, s, 10); s.spr[0] ^= 1; self.observe(c, s, 40)
+        self.assertIsNone(self.cache_freeze(c))
+
+    def test_cache_does_not_adopt_active_startup_and_handles_time_wrap(self):
+        c = CacheCapture(); s = cache_sample()
+        self.dll.kpd207_capture_seed(C.byref(c), (U8 * 8)(*range(8)))
+        self.observe(c, s, 10); self.observe(c, s, 40)
+        self.assertIsNone(self.cache_freeze(c))
+        s.sequence[0] = 2
+        self.observe(c, s, 0xfffffff8); self.observe(c, s, 11)
+        self.assertIsNone(self.cache_freeze(c))
+        self.observe(c, s, 12)
+        self.assertIsNotNone(self.cache_freeze(c))
 
     def test_binary_urls_and_frozen_copy_match_host(self):
         rng = random.Random(1729)

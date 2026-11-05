@@ -21,6 +21,8 @@ void *memset(void *dest, int value, size_t length) {
     return dest;
 }
 void __aeabi_memclr4(void *dest, size_t length) { (void)memset(dest, 0, length); }
+void __aeabi_memcpy(void *dest, const void *src, size_t length) { (void)memcpy(dest, src, length); }
+void __aeabi_memcpy4(void *dest, const void *src, size_t length) { (void)memcpy(dest, src, length); }
 size_t strlen(const char *text) {
     size_t length = 0;
     while (text[length] != '\0') ++length;

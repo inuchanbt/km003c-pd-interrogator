@@ -1,0 +1,98 @@
+"""Validate an owned PDO result in a PRIVATE, non-atomic GUI RAM snapshot.
+
+No USB access. Input must come from native-host inspect-gui on the qualified
+capture build. Never publish the complete RAM, heap, or generated report.
+"""
+import argparse
+import json
+from pathlib import Path
+import struct
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from pdinfo import model, transfer
+from pdinfo.events import Collector
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--snapshot', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--expect-empty', action='store_true')
+    parser.add_argument('--compare-fixture', action='store_true')
+    parser.add_argument('--require-current', action='store_true', help='Require opened QR to equal the latest owned capture')
+    args = parser.parse_args()
+    if args.output.exists() or not args.output.resolve().is_relative_to((ROOT / 'artifacts').resolve()):
+        parser.error('Report must be a NEW file inside ignored artifacts/')
+    meta = json.loads((args.snapshot / 'gui-snapshot.json').read_text())
+    ram = bytearray((args.snapshot / 'sram.bin').read_bytes())
+    heap = (args.snapshot / 'lvgl-heap.bin').read_bytes()
+    if (meta['sram_base'], len(ram), meta['lvgl_heap_base'], len(heap)) != (0x1fff8000, 0x2f000, 0x200091e0, 0x8000):
+        raise ValueError('Unsupported private snapshot layout')
+    ram[0x111e0:0x191e0] = heap  # 0x200091e0 - SRAM base
+
+    def read(address, size):
+        offset = address - 0x1fff8000
+        if offset < 0 or offset + size > len(ram): raise ValueError('Pointer outside private SRAM')
+        return bytes(ram[offset:offset + size])
+
+    def word(address):
+        return struct.unpack('<I', read(address, 4))[0]
+
+    layer = word(word(0x1fffaef8) + 0x58)
+    obj = word(layer + 8)
+    state = None
+    for _ in range(1024):
+        if not obj: break
+        if 0x74000 < word(obj + 0x1c) < 0x76000 and read(obj + 0x34, 1)[0] & 16:
+            state = word(obj + 0x24)
+            break
+        obj = word(obj + 84)
+    if state is None or not 0x200091e4 <= state <= 0x200111e0 - 248:
+        raise ValueError('Capture-build anchor not found')
+    capture = read(state + 56, 180)
+    flags = capture[179]
+    rng_phase, discarded = read(state + 244, 2)
+    if not flags & 8 or rng_phase != 2 or discarded != 11:
+        raise AssertionError('Native RNG seed/restoration did not complete')
+    ready = bool(flags & 4)
+    if ready == args.expect_empty: raise AssertionError('Unexpected owned capture readiness')
+    report = dict(schema=1, usb_access=False, atomic_snapshot=False,
+                  seed_ready=True, rng_restored=True, capture_ready=ready)
+    if ready:
+        result = capture[78:156]
+        spr_len, epr_len = result[4:6]
+        if not 0 < spr_len <= 28 or spr_len % 4 or epr_len > 44 or epr_len % 4:
+            raise AssertionError('Owned PDO lengths outside supported bounds')
+        snapshot = model.new_snapshot('km003c', capture[156:164].hex())
+        model.set_field(snapshot, 'spr_pdos', 'observed', result[6:6 + spr_len])
+        if epr_len: model.set_field(snapshot, 'epr_pdos', 'observed', result[34:34 + epr_len])
+        snapshot['captured_at'] = None
+        report.update(snapshot=snapshot, spr_count=spr_len // 4, epr_count=epr_len // 4)
+        if args.compare_fixture:
+            expected = model.new_snapshot('km003c')
+            collector = Collector(expected)
+            for event in json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text()): collector.feed(event)
+            for field in ('spr_pdos', 'epr_pdos'):
+                if snapshot['fields'][field].get('raw') != expected['fields'][field].get('raw'):
+                    raise AssertionError('Owned PDO bytes differ from reference wire data')
+            report['reference_wire_pdos_match'] = True
+        data = word(state + 36)
+        if data:
+            length = struct.unpack('<H', read(data + 2668, 2))[0]
+            if not 14 <= length <= 2664: raise AssertionError('Invalid frozen transfer length')
+            frozen = transfer.unpack(read(data, length))
+            report['frozen_transfer_matches_owned'] = frozen == snapshot
+            if args.require_current and frozen != snapshot:
+                raise AssertionError('Opened QR differs from latest owned capture')
+            report['frozen_snapshot'] = frozen
+            report['pages'] = len(transfer.encode_pages(frozen, transfer.DEFAULT_IMPORT_URL))
+        # The native source cache may now differ. It is deliberately not used.
+        report['native_phase'] = read(0x2000002d, 1)[0]
+    args.output.write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps({k: v for k, v in report.items() if k not in ('snapshot', 'frozen_snapshot')}))
+
+
+if __name__ == '__main__':
+    main()
