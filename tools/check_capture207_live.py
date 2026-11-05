@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--expect-empty', action='store_true')
     parser.add_argument('--compare-fixture', action='store_true')
     parser.add_argument('--require-current', action='store_true', help='Require opened QR to equal the latest owned capture')
+    parser.add_argument('--information', action='store_true', help='Decode the information-build anchor ABI (2160 bytes at +248)')
     args = parser.parse_args()
     if args.output.exists() or not args.output.resolve().is_relative_to((ROOT / 'artifacts').resolve()):
         parser.error('Report must be a NEW file inside ignored artifacts/')
@@ -45,7 +46,7 @@ def main():
     state = None
     for _ in range(1024):
         if not obj: break
-        if 0x74000 < word(obj + 0x1c) < 0x76000 and read(obj + 0x34, 1)[0] & 16:
+        if 0x74000 < word(obj + 0x1c) < 0x78000 and read(obj + 0x34, 1)[0] & 16:
             state = word(obj + 0x24)
             break
         obj = word(obj + 84)
@@ -69,6 +70,20 @@ def main():
         model.set_field(snapshot, 'spr_pdos', 'observed', result[6:6 + spr_len])
         if epr_len: model.set_field(snapshot, 'epr_pdos', 'observed', result[34:34 + epr_len])
         snapshot['captured_at'] = None
+        if args.information:
+            info = read(state + 248, 2160)
+            if info[2155] >= len(model.CAPTURE_STATES): raise AssertionError('Invalid capture status')
+            snapshot['capture_status'] = model.CAPTURE_STATES[info[2155]]
+            for index, name in enumerate(model.FIELDS[2:]):
+                f = info[index * 268:(index + 1) * 268]
+                length = struct.unpack_from('<H', f, 260)[0]
+                status, present = f[266:268]
+                if length > 260 or status >= len(model.STATES) or present > 1 or (length and not present):
+                    raise AssertionError('Invalid owned information field')
+                model.set_field(snapshot, name, model.STATES[status], f[:length] if present else None)
+            report['information_stage'] = info[2152]
+            report['information_attached'] = bool(info[2157])
+            report['field_states'] = {name: f['status'] for name, f in snapshot['fields'].items()}
         report.update(snapshot=snapshot, spr_count=spr_len // 4, epr_count=epr_len // 4)
         if args.compare_fixture:
             expected = model.new_snapshot('km003c')
@@ -79,7 +94,7 @@ def main():
                     raise AssertionError('Owned PDO bytes differ from reference wire data')
             report['reference_wire_pdos_match'] = True
         data = word(state + 36)
-        if data:
+        if data and read(data + 2671, 1)[0]:
             length = struct.unpack('<H', read(data + 2668, 2))[0]
             if not 14 <= length <= 2664: raise AssertionError('Invalid frozen transfer length')
             frozen = transfer.unpack(read(data, length))
@@ -88,6 +103,9 @@ def main():
                 raise AssertionError('Opened QR differs from latest owned capture')
             report['frozen_snapshot'] = frozen
             report['pages'] = len(transfer.encode_pages(frozen, transfer.DEFAULT_IMPORT_URL))
+        elif data:
+            report['waiting_screen'] = True
+            if args.require_current: raise AssertionError('QR transfer is not frozen yet')
         # The native source cache may now differ. It is deliberately not used.
         report['native_phase'] = read(0x2000002d, 1)[0]
     args.output.write_text(json.dumps(report, indent=2) + '\n')

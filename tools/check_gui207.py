@@ -55,6 +55,8 @@ def main():
     if args.rng_mode == 'busy': cpu.mem_write(0x40041000, struct.pack('<I', 1))
     symbols = load_elf(cpu, (args.build / 'overlay207-offline.elf').read_bytes())
     cpu.mem_write(0x39a18, bytes.fromhex('7047'))  # Only RTOS/display handler stub.
+    cpu.mem_write(0x40a70, bytes.fromhex('00207047'))  # PD logger timestamp model.
+    cpu.mem_write(0x4c888, bytes.fromhex('00207047'))  # PD mailbox RTOS notification model.
     cpu.mem_write(0x468c2, bytes.fromhex('00207047'))  # Hardware wake/orientation: awake.
     cpu.mem_write(0x1fffba0c, b'\0')
     recent, low_sp = [], [0x21010000]
@@ -272,6 +274,62 @@ def main():
     print('Native keypad: individual keys, short chord, hold/timer wrap, allocation failure and 3 reopens passed.')
     if args.trace_stack: print(f'Observed stack depth {0x2100fff0-low_sp[0]} bytes.')
     print(f'Native heap free/largest: before {initial_free}, after Exit {after_close}.')
+
+    # A second detection keeps the QR screen open while extra GETs run. The
+    # waiting screen must not export changing bytes under one measurement ID.
+    cpu.mem_write(context + 0x29, b'\x24')
+    cpu.mem_write(context + 0x3d5, b'\x08\x03\x05')
+    cpu.mem_write(context + 0xf0, spr); cpu.mem_write(context + 0xa8, epr)
+    for now in (8000, 8020):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now)); call(symbols['kpd207_gui_tick'])
+    buttons((20, 19), 8100); buttons((20, 19), 8850)
+    call(symbols['kpd207_gui_tick']); buttons((), 8851)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    pixels = word(source + 8); frozen = pixels - 2672 - 758
+    if cpu.mem_read(frozen + 2671, 1) != b'\0':
+        raise AssertionError('In-progress information capture was exported prematurely')
+    events = json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text())
+    def log(raw, sop=0, tx=False):
+        if isinstance(raw, str): raw = bytes.fromhex(raw)
+        cpu.mem_write(0x2100e000, raw)
+        call(0xecfc, context, 0x2100e000, int(tx), sop)
+    for index in (0, 1):
+        event = events[index]; log(event['wire_hex'], event['sop'], index == 0)
+    now = 10020
+    cpu.mem_write(0x1fffba20, struct.pack('<I', now)); call(symbols['kpd207_gui_tick'])
+    for typ, reply in ((24, 9), (17, 10), (18, 11), (23, 12), (6, 14), (15, None)):
+        if cpu.mem_read(context + 0x4c, 1)[0] & 31 != typ:
+            raise AssertionError('GUI did not enqueue the expected native request')
+        if typ == 6: log('86 a2 04 00 00 00 00 00 00 00', tx=True)
+        elif typ == 15: log('8f 10 01 a8 00 ff', tx=True)
+        else: log(struct.pack('<H', 0x80 | typ), tx=True)
+        log('af 11 81 a8 00 ff' if reply is None else events[reply]['wire_hex'])
+        cpu.mem_write(context + 0x27, b'\0')
+        now += 5; cpu.mem_write(0x1fffba20, struct.pack('<I', now)); call(symbols['kpd207_gui_tick'])
+        now += 150; cpu.mem_write(0x1fffba20, struct.pack('<I', now)); call(symbols['kpd207_gui_tick'])
+    binary_length = struct.unpack('<H', cpu.mem_read(frozen + 2668, 2))[0]
+    decoded = transfer.unpack(bytes(cpu.mem_read(frozen, binary_length)))
+    if decoded['capture_status'] != 'completed' or any(decoded['fields'][name]['status'] != 'pass'
+            for name in ('revision', 'source_cap_ext', 'source_status', 'source_info', 'manufacturer')):
+        raise AssertionError('GUI did not replace its waiting screen with the complete information QR')
+    if cpu.mem_read(frozen + 2670, 1)[0] != 5:
+        raise AssertionError('Expected five pages for this reference information result')
+    owned_id = decoded['measurement_id']
+    owned_binary = bytes(cpu.mem_read(frozen, binary_length))
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    cpu.mem_write(context + 0x29, b'\0'); call(symbols['kpd207_gui_tick'])
+    buttons((20, 19), now + 100); buttons((20, 19), now + 850)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 851)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    reopened = word(source + 8) - 2672 - 758
+    if bytes(cpu.mem_read(reopened, binary_length)) != owned_binary:
+        raise AssertionError('Information result changed after idle/reopen')
+    if transfer.unpack(bytes(cpu.mem_read(reopened, binary_length)))['measurement_id'] != owned_id:
+        raise AssertionError('Information result ID changed after idle/reopen')
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    if word(input_device + 0x5c) != original_group or heap_free()[0] != after_close[0]:
+        raise AssertionError('Information screen leaked memory or native input ownership')
+    print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
 
 
 if __name__ == '__main__':

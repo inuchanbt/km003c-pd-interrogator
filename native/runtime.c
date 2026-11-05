@@ -20,6 +20,14 @@ void *memset(void *dest, int value, size_t length) {
     while (length-- != 0) *d++ = (uint8_t)value;
     return dest;
 }
+int memcmp(const void *left, const void *right, size_t length) {
+    const uint8_t *a = left, *b = right;
+    while (length-- != 0) {
+        int delta = (int)*a++ - (int)*b++;
+        if (delta) return delta;
+    }
+    return 0;
+}
 void __aeabi_memclr4(void *dest, size_t length) { (void)memset(dest, 0, length); }
 void __aeabi_memcpy(void *dest, const void *src, size_t length) { (void)memcpy(dest, src, length); }
 void __aeabi_memcpy4(void *dest, const void *src, size_t length) { (void)memcpy(dest, src, length); }

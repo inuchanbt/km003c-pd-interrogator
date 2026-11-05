@@ -8,7 +8,7 @@ use aes::{
 };
 use sha2::{Digest, Sha256};
 
-pub const MAX_BYTES: usize = 0x72000; // End 0x76000: only one extra 8 KiB sector.
+pub const MAX_BYTES: usize = 0x74000; // End 0x78000: two extra 8 KiB sectors.
 const STOCK_LEN: usize = 0x6f8c0;
 const TAIL_OFFSET: usize = 0x70000;
 const ENTRY: usize = 0x1ebb0 - 0x4000;
@@ -66,7 +66,7 @@ pub(super) fn validate_ciphertext(image: &FirmwareImage) -> Result<(), KMError> 
 fn validate_with_prefix(data: &[u8], prefix_hash: &str) -> Result<Kind, KMError> {
     if !(TAIL_OFFSET + 68..=MAX_BYTES).contains(&data.len()) || !data.len().is_multiple_of(4) {
         return Err(invalid(
-            "HW2.3 extension size exceeds its one-sector profile",
+            "HW2.3 extension size exceeds its two-sector profile",
         ));
     }
     if data[IMAGE_METADATA_OFFSET..IMAGE_METADATA_OFFSET + 8] != [0xff; 8] {

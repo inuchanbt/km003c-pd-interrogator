@@ -7,7 +7,7 @@ use std::{fs, path::Path};
 
 pub const BASE: usize = 0x4000;
 pub const END: usize = 0x80000;
-pub const WRITE_END: usize = 0x76000;
+pub const WRITE_END: usize = 0x78000;
 const STOCK_HASH: &str = "c63057eaf08b8625e7ac2fc7270c06d75515e78fdbdd46080bdf4b696984ec67";
 
 pub struct Stock {
@@ -85,7 +85,7 @@ pub fn apply_installed(current: &[u8], installed: &[u8]) -> Result<Vec<u8>> {
     let erase_bytes = installed.len().div_ceil(0x2000) * 0x2000;
     ensure!(
         BASE + erase_bytes <= WRITE_END,
-        "Erase exceeds the one-extra-sector profile"
+        "Erase exceeds the two-extra-sector profile"
     );
     let mut result = current.to_vec();
     result[..erase_bytes].fill(255);
@@ -153,7 +153,10 @@ pub fn audit(s: &Stock, stock_path: &Path, folder: &Path) -> Result<Bundle> {
             && manifest["stock_sha256"] == STOCK_HASH
             && manifest["loader_sha256"] == hw23::LOADER_HASH
             && manifest["application_base"] == BASE
-            && manifest["maximum_erase_end"] == WRITE_END
+            && matches!(
+                manifest["maximum_erase_end"].as_u64(),
+                Some(0x76000 | 0x78000)
+            )
             && manifest["stock_manifest_sha256"]
                 == backup::digest(&fs::read(stock_path.join("manifest.json"))?),
         "Bundle does not belong to this qualified backup/profile"
@@ -184,6 +187,11 @@ pub fn audit(s: &Stock, stock_path: &Path, folder: &Path) -> Result<Bundle> {
     let overlay = hw23::parse(&encoded[0], &s.loader)?;
     let erase_pass = hw23::parse(&encoded[1], &s.loader)?;
     let restore = FirmwareImage::parse(&encoded[2])?;
+    let declared_end = manifest["maximum_erase_end"].as_u64().unwrap() as usize;
+    ensure!(
+        BASE + overlay.data().len().div_ceil(0x2000) * 0x2000 <= declared_end,
+        "Bundle exceeds its declared erase boundary"
+    );
     ensure!(
         hw23::validate_payload(overlay.data())? == hw23::Kind::Overlay
             && hw23::validate_payload(erase_pass.data())? == hw23::Kind::RollbackErasePass,
@@ -227,7 +235,7 @@ mod tests {
         let stock = vec![0x5a; 0x738c0 - BASE];
         baseline[..stock.len()].copy_from_slice(&stock);
         let mut overlay = stock.clone();
-        overlay.resize(0x70ff4, 255);
+        overlay.resize(0x72400, 255);
         overlay[0x70000..].fill(0x12);
         let changed = apply_installed(&baseline, &overlay).unwrap();
         assert_ne!(apply_installed(&changed, &stock).unwrap(), baseline);
@@ -243,10 +251,10 @@ mod tests {
         let baseline = vec![255; END - BASE];
         assert!(apply_installed(&baseline, &vec![0; hw23::MAX_BYTES + 1]).is_err());
         assert!(apply_installed(&baseline, &vec![0; 0x45f]).is_err());
-        let result = apply_installed(&baseline, &vec![0x12; 0x70ff4]).unwrap();
+        let result = apply_installed(&baseline, &vec![0x12; 0x72400]).unwrap();
         assert_eq!(
-            result[0x70ff4..WRITE_END - BASE],
-            vec![255; WRITE_END - BASE - 0x70ff4]
+            result[0x72400..WRITE_END - BASE],
+            vec![255; WRITE_END - BASE - 0x72400]
         );
         let mut corrupted = result.clone();
         corrupted[WRITE_END - BASE] ^= 1;

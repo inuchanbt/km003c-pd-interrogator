@@ -1,6 +1,8 @@
 # 本体でPDOを固定し、実データをQRへ渡す
 
-既知ハッシュのHW2.3／純正2.0.7に限定します。現行の取得対象はSPR/EPR PDOだけです。
+以下は実機確認済みのPDO観測版 `26f6250` の記録です。
+追加情報の取得を実装した次の候補は [NATIVE-INFO-207.md](NATIVE-INFO-207.md) を参照してください。
+既知ハッシュのHW2.3／純正2.0.7に限定します。この観測版の取得対象はSPR/EPR PDOだけです。
 Revision、Source Capabilities Extended、Source Info、Statusなどへの追加GET要求は送りません。
 それらの項目はQR内でも `not_requested` のままです。
 

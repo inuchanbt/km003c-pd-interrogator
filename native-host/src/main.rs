@@ -58,7 +58,7 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// In native DFU: erase added sector, then restore exact original application.
+    /// In native DFU: erase added sectors, then restore exact original application.
     Restore {
         #[arg(long)]
         bundle: PathBuf,

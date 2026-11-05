@@ -55,7 +55,8 @@ def main():
 
     erase_cases = []
     for start, end, expected in [(0x4000, 0x74ff4, 0), (0x4000, 0x76000, 0),
-                                  (0x74000, 0x76000, 0), (0x3fff, 0x76000, 1), (0x4000, 0x80000, 1)]:
+                                  (0x74000, 0x76000, 0), (0x4000, 0x78000, 0),
+                                  (0x76000, 0x78000, 0), (0x3fff, 0x78000, 1), (0x4000, 0x80000, 1)]:
         cpu = machine()
         # Model only always-ready EFM flags, cache bit-band storage and control.
         cpu.mem_map(0x40010000, 0x1000)

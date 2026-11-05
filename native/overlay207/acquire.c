@@ -91,3 +91,66 @@ void kpd207_acquire_tick(struct kpd207_capture *c, struct kpd207_random *r, uint
      * No IRQ mask/scheduler lock is held, and QR work uses only the owned copy. */
     kpd207_capture_observe(c, &observation, now);
 }
+
+/* Observe the native logger without changing its USB consumer cursor. Its
+ * cumulative byte count is uint16_t; our independent physical cursor survives
+ * that rollover. A complete record is committed only when count and position
+ * agree, and all metadata is rechecked after the bounded copy. */
+static void records(struct kpd207_info *i, uint32_t now) {
+    volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
+    if (p[0x3d9] & 1) return;
+    uint16_t total = u16(p + 0x780), position = u16(p + 0x77c);
+    if (position >= 320) return;
+    if (!i->ring_ready) {
+        i->ring_total = total; i->ring_position = position; i->ring_ready = true; return;
+    }
+    unsigned delta = (uint16_t)(total - i->ring_total);
+    if (!delta) return;
+    if (delta > 320) {
+        kpd207_info_stop(i, KPD_INVALID);
+        i->ring_total = total; i->ring_position = position; return;
+    }
+    if ((i->ring_position + delta) % 320 != position) return; /* In-progress writer. */
+    uint8_t bytes[320];
+    unsigned cursor = i->ring_position;
+    for (unsigned n = 0; n < delta; ++n) {
+        bytes[n] = p[0x63a + cursor];
+        if (++cursor == 320) cursor = 0;
+    }
+    if ((p[0x3d9] & 1) || total != u16(p + 0x780) || position != u16(p + 0x77c)) return;
+    i->ring_total = total; i->ring_position = position;
+    if (!kpd207_info_records(i, bytes, delta, now)) kpd207_info_stop(i, KPD_INVALID);
+}
+
+__attribute__((noinline))
+void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {
+    volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
+    uint8_t phase = p[0x29];
+    if (!phase) {
+        if (i->attached) kpd207_info_stop(i, KPD_RESET);
+        /* Arm a new attachment without clearing the retained completed result. */
+        i->stage = KPD207_INFO_IDLE;
+        i->ring_ready = false; records(i, now);
+        return;
+    }
+    if (!i->attached && i->stage == KPD207_INFO_IDLE) kpd207_info_begin(i);
+    records(i, now);
+    bool ready = phase == 0x24 && (c->flags & KPD207_CAPTURE_READY);
+    unsigned selected = p[3] >> 4;
+    bool pps = false;
+    if (selected && selected <= 11) {
+        const volatile uint8_t *raw = p + 0xa8 + (selected - 1) * 4;
+        uint32_t pdo = (uint32_t)u16(raw) | (uint32_t)u16(raw + 2) << 16;
+        pps = (pdo >> 28) == 12; /* Actual selected native PDO is PPS APDO. */
+    }
+    kpd207_info_tick(i, ready, pps, now);
+    if (!ready || i->stage != KPD207_INFO_COMMAND || (p[0x27] & 5)) return;
+    uint8_t command[7];
+    unsigned length = kpd207_info_command(i, command);
+    if (!length) return;
+    kpd207_info_sent(i, now);
+    /* Same asynchronous enqueue used by stock 'pd data='. It copies the bytes
+     * immediately; native policy/PHY retain MessageID, GoodCRC and bus ownership.
+     * Do not call its raw PHY transmitter or alter a negotiated contract. */
+    ((void (*)(const uint8_t *, unsigned))(uintptr_t)0x3f669)(command, length);
+}

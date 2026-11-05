@@ -1,0 +1,85 @@
+# 本体で追加PD情報を取得する
+
+対象は既知ハッシュのHW2.3／純正2.0.7です。この版は、純正PD検出中にSPR/EPR PDOを固定した後、
+純正の送信経路を使って追加情報を順に要求します。
+対象1個体への適用・起動と、全内部領域／loader／校正領域の照合まで確認済みです。
+追加GETの実機確認はこれからで、以下の通信試験はオフラインです。
+
+## 操作
+
+1. 下流の機器・負荷を外し、測定入力に調べるUSB-C電源を接続します。
+2. これまでと同じ純正のPD検出を開始します。PDOが安定してから2秒待って、追加要求が始まります。
+3. 左右同時長押しでQR画面を開きます。取得中は `READING PD / PLEASE WAIT` と表示します。
+4. 要求一覧の終了後、結果のQRへ自動で切り替えます。左右でページを切り替え、Exitで閉じます。
+5. 純正の検出を閉じても結果とIDはRAMに保持します。再起動で消えます。
+
+取得中はPCからPD制御コマンドやログの初期化を送らないでください。
+拡張独自の電圧選択・EPR entry・PPS契約変更・ロール交換は行いません。
+純正検出自体が行うネゴシエーションと、その終了操作は従来のままです。
+
+## 要求する項目
+
+| 項目 | 本体側の動作 |
+|---|---|
+| SPR/EPR PDO | 既存の所有コピーを使用。古いアイドルキャッシュは不採用 |
+| PDリビジョン | Get_Revision。ヘッダーのrevision bitsからの捏造はしない |
+| 電源の識別情報 | Get_Source_Cap_Extended |
+| 電源ステータス | Get_Status |
+| 電源のPDP情報 | Get_Source_Info |
+| メーカー情報 | Get_Manufacturer_Info、Target 0 / Ref 0 |
+| 電源Identity | SOP Discover Identity。NAK/BUSYも区別 |
+| PPSステータス | 純正Ready状態で選択中PDOがPPS APDOの場合だけGet_PPS_Status |
+| ケーブルIdentity | 純正が行うSOP′ Discover Identityの要求と応答を観測。独自のVCONN操作はしない |
+
+PPS契約がない場合や、純正がケーブルIdentityを要求していない場合は、その項目を `not_requested` とします。
+実際に見たケーブル要求に応答がなければ `no_response`、ACKを回収した場合は `observed` です。
+追加GETではネイティブ送信パケットを確認した後の対応応答だけを `pass` にします。
+Not_Supported / Reject / Waitは、それぞれ `unsupported` / `rejected` / `busy` です。
+
+PDO待ちには6秒、送信確認または応答待ちには1.2秒の期限を設け、次の要求の前に150ms空けます。
+送信失敗・無応答・不正応答では残りの要求を打ち切ります。未実行の項目は未要求のままです。
+切断・Soft Reset・履歴あふれでも終了し、既に得たPDOと情報は保持します。
+`completed` は適用対象の要求一覧が終了した意味で、全項目の成功や規格適合を意味しません。
+
+## 純正との接続
+
+`native/overlay207/info.c` は時刻と受信レコードを入力する純粋な状態機械です。
+`acquire.c` のadapterだけが、対象ROMに固定したメモリーと関数を参照します。
+
+- 送信は純正 `pd data=` と同じ `0x3f668` へ、SOP・ヘッダー・ペイロードを渡します。
+  この関数は即座にコピーしてイベント通知し、純正Policy Engine/PHYが送信します。
+  MessageID、GoodCRC、再送、物理バスは純正が管理します。
+- 純正 `0xecfc` が残す320バイトの循環履歴を読み取ります。USB用consumer cursorは変更しません。
+- 生履歴の累積16bitカウンターと物理位置を別々に保持し、カウンター周回にも対応します。
+  書込み中フラグ、位置と累積差分の対応、コピー前後のメタデータ一致を確認します。
+  読めなかった履歴を成功扱いせず、容量超過はactive requestを `invalid` として終了します。
+- Extended応答は最大260バイト／10チャンクで、Data Size、順序、重複一致、境界を検証します。
+  Request_Chunkの自作や不完全なデータの補完はしません。純正が後続チャンクを回収しない場合は `partial` です。
+- 所有データはGUI heapのanchor内です。追加の固定RAM、割り込み、スケジューラー停止は使いません。
+  追加情報状態は2,160バイト、anchor全体は2,408バイトです。
+- 取得終了までQRの転送用コピーを作りません。凍結後は全ページで同じバイト列を使います。
+  ページ番号は2桁で最大57ページを表示できます。
+
+内部フラッシュの拡張は約9.3KBとなり、追加8KBセクターを2個使用します。
+専用更新profileの消去終端は最大 `0x78000`、残りの `0x78000..0x7ffff` を保護します。
+純正コードの変更位置は従来と同じ2箇所／計12バイトです。loader・校正領域は変更しません。
+既存の1セクター版bundleも宣言境界内で厳密に検査し、置換前の全内部バイト照合に使用します。
+
+## 検証
+
+ホストCの試験では、実測由来のRevision / Source Capabilities Extended / Status / Source Info /
+Manufacturer応答の保存、NAK、Wait、Reject、送信未確認、無応答、切断、Soft Reset、
+最大長、重複チャンク、欠落チャンク、不正サイズ、タイマー周回を確認します。
+
+`tools/check_info207.py` は所有者の非公開ROMで純正loggerとenqueue関数そのものをARM実行します。
+6種類の要求の投入、5種類の参照応答、ケーブルIdentity、NAK、16bit周回、循環バッファ周回、
+履歴あふれ、およびUSB consumer cursorを変更しないことを確認します。
+時刻とRTOS通知だけを代替しており、PHY／RTOSの実時間動作は検証対象外です。
+
+```powershell
+python tools/check_info207.py --stock <private-stock-app.bin> --build artifacts/overlay207
+```
+
+純正ROM/RAMを用いたGUI検証、専用loaderの2セクター消去範囲、全内部領域の2段階復元モデルも確認します。
+実機での追加GET・PDとGUIの共存・iPhone取込は別途確認します。
+短時間の抜き差しや任意の電源に対する世代判定・通信適合性を保証するものではありません。

@@ -44,6 +44,7 @@ def main():
                ('native/overlay207/gui.c', 'gui', True),
                ('native/overlay207/capture.c', 'capture', True),
                ('native/overlay207/acquire.c', 'acquire', True),
+               ('native/overlay207/info.c', 'info', True),
                ('native/kpd.c', 'kpd', True), ('native/runtime.c', 'runtime', True),
                ('native/vendor/qrcodegen/qrcodegen.c', 'qrcodegen', True)]
     objects = []
@@ -75,7 +76,7 @@ def main():
     struct.pack_into('<I', tail, 16, zlib.crc32(tail))
     for name, data in [('gate.bin', gate), ('extension.bin', tail)]:
         (args.output / name).write_bytes(data)
-    report = dict(schema=1, purpose='native owned PDO capture and QR GUI; no additional GET requests or installer',
+    report = dict(schema=1, purpose='native PDO and information-request capture with QR GUI; no installer',
                   gate_address='0x738c0', gate_bytes=len(gate),
                   extension_address='0x74000', extension_bytes=len(tail),
                   extension_sha256=hashlib.sha256(tail).hexdigest(),

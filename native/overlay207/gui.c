@@ -50,10 +50,11 @@ struct screen_state {
     bool chord, chord_fired;
     struct kpd207_capture capture;
     struct kpd207_random random;
+    struct kpd207_info info;
 };
 _Static_assert(sizeof(struct image_descriptor) == 12, "ARM32 image descriptor");
 _Static_assert(offsetof(struct screen_state, capture) == 56 &&
-               offsetof(struct screen_state, random) == 236 && sizeof(struct screen_state) == 248,
+               offsetof(struct screen_state, random) == 236 && offsetof(struct screen_state, info) == 248,
                "Update the private live-state inspector when the GUI ABI changes");
 
 static uint8_t anchor_signal(void *obj, uint8_t sign, void *param) {
@@ -109,9 +110,9 @@ static uint8_t image_signal(void *obj, uint8_t sign, void *param) {
 
 static void text(struct screen_data *d, const char *str, unsigned x, unsigned y, unsigned scale) {
     /* Three columns/five rows, top bit first. Code-native bitmap text. */
-    const char chars[] = "0123456789ACDEILNOPRSTUVX/ ";
+    const char chars[] = "0123456789ACDEILNOPRSTUVX/GW ";
     const uint16_t glyphs[] = {0x7b6f,0x2c97,0x73e7,0x73cf,0x5bc9,0x79cf,0x79ef,0x7292,0x7bef,0x7bcf,
-        0x2bed,0x7927,0x6b6e,0x79a7,0x7497,0x4927,0x5ffd,0x7b6f,0x7be4,0x6bad,0x79cf,0x7492,0x5b6f,0x5b6a,0x5aad,0x12a4,0};
+        0x2bed,0x7927,0x6b6e,0x79a7,0x7497,0x4927,0x5ffd,0x7b6f,0x7be4,0x6bad,0x79cf,0x7492,0x5b6f,0x5b6a,0x5aad,0x12a4,0x797f,0x5bfd,0};
     for (unsigned c = 0; str[c]; ++c) {
         unsigned g = 0;
         while (chars[g] && chars[g] != str[c]) ++g;
@@ -133,8 +134,9 @@ static bool render(struct screen_state *s) {
     memset(d->pixels, 255, 4); /* Native 32-bit palette: opaque white, black */
     d->pixels[7] = 255;
     if (!d->transfer.ready) {
-        text(d, s->random.phase == 3 ? "ID ERROR" : "NO DATA", 58, 80, 4);
-        text(d, "RUN PD TEST", 34, 120, 4);
+        bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
+        text(d, reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 42, 80, 4);
+        text(d, reading ? "PLEASE WAIT" : "RUN PD TEST", 34, 120, 4);
         text(d, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
@@ -145,12 +147,11 @@ static bool render(struct screen_state *s) {
             if (row[x * 2] == 0)
                 d->pixels[8 + y * 30 + x / 8] |= (uint8_t)(0x80u >> (x % 8));
     }
-    /* Text outside the complete quiet zone (rows 218..233). PDO captures
-     * have at most 3 pages; the frozen transfer supplies both digits. */
-    char label[] = "SAVED 1/1";
-    label[6] = (char)('0' + s->page);
-    label[8] = (char)('0' + d->transfer.pages);
-    text(d, label, 102, 235, 1);
+    /* Up to 57 pages for the bounded maximum schema, outside quiet zone. */
+    char label[] = "SAVED 01/01";
+    label[6] = (char)('0' + s->page / 10); label[7] = (char)('0' + s->page % 10);
+    label[9] = (char)('0' + d->transfer.pages / 10); label[10] = (char)('0' + d->transfer.pages % 10);
+    text(d, label, 98, 235, 1);
     return true;
 }
 
@@ -170,7 +171,8 @@ static void open_result(struct screen_state *s, void *layer) {
     if (!s->data) return;
     s->page = 1;
     memset(&s->data->transfer, 0, sizeof(s->data->transfer));
-    (void)kpd207_capture_freeze(&s->capture, &s->data->transfer);
+    if (!s->info.attached || s->info.stage == KPD207_INFO_DONE)
+        (void)kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer);
     if (!render(s)) goto failed;
     s->descriptor.header = 7u | (240u << 10) | (240u << 21); /* INDEXED_1BIT */
     s->descriptor.size = sizeof(s->data->pixels);
@@ -212,7 +214,15 @@ void kpd207_gui_screen_tick(void) {
             break;
         }
     }
-    kpd207_acquire_tick(&s->capture, &s->random, tick_get());
+    uint32_t now = tick_get();
+    kpd207_acquire_tick(&s->capture, &s->random, now);
+    kpd207_information_tick(&s->info, &s->capture, now);
+    if (s->data && !s->data->transfer.ready &&
+        (!s->info.attached || s->info.stage == KPD207_INFO_DONE) &&
+        kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer)) {
+        if (render(s)) obj_invalidate(s->image);
+        else close_screen(s);
+    }
     if (s->pending) {
         uint8_t action = s->pending;
         s->pending = 0;
