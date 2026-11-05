@@ -40,7 +40,8 @@ C実装をホスト用共有ライブラリとして実行し、PythonのTLV／U
 元データを変更した後も固定コピーが保たれること、最大長、空応答、異常入力も確認します。
 生成したRGB565の全行を画像としてjsQRで読み取り、URLに戻します。
 
-ARM向けビルドは次の独立した容量確認です。Clang/LLD/llvm-sizeを使います。
+ARM向けビルドは次の独立した容量確認です。Clang/LLDを使います。
+容量は生成ELFの割当対象セクションから計算するため、別のsizeツールは不要です。
 
 ```powershell
 python tools/check_native_size.py --clang C:\path\to\clang.exe

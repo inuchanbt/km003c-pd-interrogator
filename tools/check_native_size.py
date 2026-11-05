@@ -1,9 +1,26 @@
 """Link a Cortex-M4 size probe, with no stock binary or device access."""
 import argparse
 from pathlib import Path
+import struct
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def section_sizes(elf):
+    """Count allocated ELF32 sections, as text/data/bss, without an extra tool."""
+    image = elf.read_bytes()
+    if image[:7] != b'\x7fELF\x01\x01\x01':
+        raise ValueError('Expected little-endian ELF32')
+    shoff = struct.unpack_from('<I', image, 32)[0]
+    shsize, shnum = struct.unpack_from('<HH', image, 46)
+    sizes = dict(text=0, data=0, bss=0)
+    for index in range(shnum):
+        _, kind, flags, _, _, length, _, _, _, _ = struct.unpack_from('<10I', image, shoff + index * shsize)
+        if flags & 2:  # SHF_ALLOC
+            category = 'bss' if kind == 8 else 'data' if flags & 1 else 'text'
+            sizes[category] += length
+    return sizes
 
 
 def main():
@@ -27,8 +44,7 @@ def main():
                     '-Wl,--gc-sections', '-Wl,--entry=kpd_sizecheck', '-Wl,-Ttext=0x10000',
                     '-Wl,-Map=' + str(args.output / 'sizecheck.map'),
                     *map(str, objects), '-o', str(elf)], check=True)
-    size = args.clang.parent / ('llvm-size.exe' if args.clang.suffix == '.exe' else 'llvm-size')
-    subprocess.run([str(size), str(elf)], check=True)
+    print(' '.join(f'{name}={length}' for name, length in section_sizes(elf).items()))
     print('Offline size check only; this ELF is not a KM003C firmware image.')
 
 
