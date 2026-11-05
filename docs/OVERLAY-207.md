@@ -44,7 +44,7 @@ CRCは破損検出です。判定処理自体や純正部分の破損からの�
 
 ## オフライン検証
 
-通常の49件のテストに加え、次を実行します。Unicorn 2.1.4、Node.js、Clang/LLDが必要です。
+通常の56件のテストに加え、次を実行します。Unicorn 2.1.4、Node.js、Clang/LLDが必要です。
 
 ```powershell
 python tools/build_overlay207.py --clang C:\path\to\clang.exe
@@ -59,7 +59,7 @@ python tools/check_native_arm.py artifacts/overlay207/overlay207-offline.elf --o
 
 純正GUI handlerは呼び出し回数確認用スタブに置換して検証しています。
 実際のGUI初期化、割り込みとの同時動作、PD/EPRの時間制約、液晶表示はこの検証に含みません。
-28ケースは49件のPythonテストとは別のARM検証です。
+28ケースは56件のPythonテストとは別のARM検証です。
 
 ## この個体のブートローダー
 

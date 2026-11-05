@@ -62,6 +62,18 @@ class ModelTests(unittest.TestCase):
         d=model.decode('spr_pdos',struct.pack('<II', (100<<10)|300, 0xc0000000|(110<<17)|(33<<8)|60))
         self.assertEqual((d[0]['voltage_mv'],d[0]['current_ma']),(5000,3000))
         self.assertEqual((d[1]['min_mv'],d[1]['max_mv'],d[1]['current_ma']),(3300,11000,3000))
+    def test_avs_source_pdo_fields(self):
+        spr,epr=model.decode('epr_pdos',struct.pack('<II',0xE404B1F4,0xD7C096F0))
+        self.assertEqual(spr,dict(index=1,raw='E404B1F4',type=3,kind='spr_avs',
+            max_current_9v_15v_ma=3000,max_current_15v_20v_ma=5000,peak_current_code=1))
+        self.assertEqual(epr,dict(index=2,raw='D7C096F0',type=3,kind='epr_avs',
+            min_mv=15000,max_mv=48000,pdp_w=240,peak_current_code=1))
+        self.assertNotIn('current_ma',epr) # EPR AVS encodes PDP, not a flat current.
+    def test_avs_masks_and_zero_upper_band(self):
+        spr=model.decode('spr_pdos',struct.pack('<I',0xE0000000|(250<<10)))[0]
+        self.assertEqual((spr['max_current_9v_15v_ma'],spr['max_current_15v_20v_ma']),(2500,0))
+        epr=model.decode('epr_pdos',struct.pack('<I',0xD0000000|(500<<17)|(150<<8)|200))[0]
+        self.assertEqual((epr['min_mv'],epr['max_mv'],epr['pdp_w']),(15000,50000,200))
 
 
 class TransferTests(unittest.TestCase):

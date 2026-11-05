@@ -19,9 +19,17 @@ assert.throws(()=>KPD.assemble([input.vectors[0].pages[0],input.vectors[1].pages
 assert.throws(()=>KPD.parsePage('KPD1:invalid'));
 const storage={data:new Map(),getItem(key){return this.data.get(key)||null;},setItem(key,value){this.data.set(key,value);}};
 const vector=input.vectors.at(-1),first=new Store(storage);
+const actual=KPD.assemble(vector.url_pages).snapshot.fields;
+assert.equal(KPD.formatPDO(actual.spr_pdos.decoded[4]),'5: SPR AVS\n  9–15 V / 3 A\n  15–20 V / 5 A');
+assert.equal(KPD.formatPDO(actual.epr_pdos.decoded[10]),'11: EPR AVS 15–48 V / 240 W MAX\n  48 V時のPDP換算: 5 A');
+assert.match(KPD.formatPDO({index:1,kind:'spr_avs',max_current_9v_15v_ma:2500,max_current_15v_20v_ma:0}),/非対応（0 A）/);
+assert.ok(!KPD.formatPDO({index:1,kind:'epr_avs',min_mv:15000,max_mv:0,pdp_w:100}).includes('Infinity'));
 first.add([vector.url_pages[0]]);assert.equal(first.current().received,1);
 const second=new Store(storage);assert.equal(second.current().received,1);
 second.add(vector.url_pages.slice(1));assert.deepEqual(second.current().snapshot.fields,vector.snapshot.fields);
+const reopened=new Store(storage);
+assert.match(KPD.formatPDO(reopened.current().snapshot.fields.spr_pdos.decoded[4]),/SPR AVS/);
+assert.match(KPD.formatPDO(reopened.current().snapshot.fields.epr_pdos.decoded[10]),/240 W MAX/);
 assert.deepEqual(first.sync().snapshot.fields,vector.snapshot.fields);
 second.add([KPD.parsePage(vector.url_pages[0]).text]);assert.equal(second.current().received,vector.url_pages.length);
 const original=storage.getItem(STORAGE_KEY),parts=KPD.parsePage(vector.url_pages[0]).text.split(':');

@@ -48,6 +48,8 @@
         if(!p) row.kind='reserved';
         else if(p>>>30===0) Object.assign(row,{kind:'fixed',voltage_mv:(p>>>10&1023)*50,current_ma:(p&1023)*10});
         else if(p>>>30===3 && (p>>>28&3)===0) Object.assign(row,{kind:'pps',min_mv:(p>>>8&255)*100,max_mv:(p>>>17&255)*100,current_ma:(p&127)*50});
+        else if(p>>>30===3 && (p>>>28&3)===1) Object.assign(row,{kind:'epr_avs',min_mv:(p>>>8&255)*100,max_mv:(p>>>17&511)*100,pdp_w:p&255,peak_current_code:p>>>26&3});
+        else if(p>>>30===3 && (p>>>28&3)===2) Object.assign(row,{kind:'spr_avs',max_current_9v_15v_ma:(p>>>10&1023)*10,max_current_15v_20v_ma:(p&1023)*10,peak_current_code:p>>>26&3});
         else row.kind='raw';
         rows.push(row);
       }
@@ -100,7 +102,20 @@
     if(snapshot.measurement_id!==identity.id) throw Error('測定IDが一致しません');
     return {received:chunks.size,total:identity.total,snapshot};
   }
-  const api={parsePage,assemble,unpack,crc32};
+  function formatPDO(p) {
+    if(p.kind==='fixed')return `${p.index}: ${p.voltage_mv/1000} V / ${p.current_ma/1000} A`;
+    if(p.kind==='pps')return `${p.index}: PPS ${p.min_mv/1000}–${p.max_mv/1000} V / ${p.current_ma/1000} A`;
+    if(p.kind==='spr_avs'){
+      const current=ma=>ma?`${ma/1000} A`:'非対応（0 A）';
+      return `${p.index}: SPR AVS\n  9–15 V / ${current(p.max_current_9v_15v_ma)}\n  15–20 V / ${current(p.max_current_15v_20v_ma)}`;
+    }
+    if(p.kind==='epr_avs'){
+      const equivalent=p.max_mv>0?`\n  ${p.max_mv/1000} V時のPDP換算: ${Number((p.pdp_w*1000/p.max_mv).toFixed(3))} A`:'';
+      return `${p.index}: EPR AVS ${p.min_mv/1000}–${p.max_mv/1000} V / ${p.pdp_w} W MAX${equivalent}`;
+    }
+    return `${p.index}: ${p.kind} ${p.raw}`;
+  }
+  const api={parsePage,assemble,unpack,crc32,formatPDO};
   if(typeof module!=='undefined' && module.exports) module.exports=api;
   root.KPD=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

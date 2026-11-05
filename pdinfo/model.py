@@ -39,6 +39,14 @@ def decode(name, raw):
             elif pdo >> 30 == 3 and (pdo >> 28 & 3) == 0:
                 row.update(kind='pps', min_mv=(pdo >> 8 & 255) * 100,
                            max_mv=(pdo >> 17 & 255) * 100, current_ma=(pdo & 127) * 50)
+            elif pdo >> 30 == 3 and (pdo >> 28 & 3) == 1:
+                row.update(kind='epr_avs', min_mv=(pdo >> 8 & 255) * 100,
+                           max_mv=(pdo >> 17 & 511) * 100, pdp_w=pdo & 255,
+                           peak_current_code=pdo >> 26 & 3)
+            elif pdo >> 30 == 3 and (pdo >> 28 & 3) == 2:
+                row.update(kind='spr_avs', max_current_9v_15v_ma=(pdo >> 10 & 1023) * 10,
+                           max_current_15v_20v_ma=(pdo & 1023) * 10,
+                           peak_current_code=pdo >> 26 & 3)
             else:
                 row['kind'] = 'raw'
             result.append(row)

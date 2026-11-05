@@ -38,7 +38,7 @@ function render(){
     if(!field.raw && field.status==='pass')text='応答成功（このQRに生データなし）';
     if(!field.raw && field.status==='partial')text='一部のみ取得（完全な生データなし）';
     if(d){
-      if(Array.isArray(d))text=d.map(p=>p.kind==='fixed'?`${p.index}: ${p.voltage_mv/1000} V / ${p.current_ma/1000} A`:p.kind==='pps'?`${p.index}: PPS ${p.min_mv/1000}–${p.max_mv/1000} V / ${p.current_ma/1000} A`:`${p.index}: ${p.kind} ${p.raw}`).join('\n');
+      if(Array.isArray(d))text=d.map(KPD.formatPDO).join('\n');
       else if(name==='revision')text=`Rev ${d.pd_revision} / Spec Ver ${d.pd_spec_version}`;
       else if(name==='source_info')text=`報告 ${d.port_reported_pdp_w} W / 現在 ${d.port_present_pdp_w} W / 最大 ${d.port_maximum_pdp_w} W`;
       else if(name==='source_cap_ext')text=`VID ${d.vid} / PID ${d.pid}\nSPR ${d.spr_pdp_w} W${d.epr_pdp_w===null?'':` / EPR ${d.epr_pdp_w} W`}`;
