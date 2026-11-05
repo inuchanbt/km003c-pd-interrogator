@@ -49,7 +49,8 @@ python tools/check_native_size.py --clang C:\path\to\clang.exe
 
 出力は `artifacts/native-size/sizecheck-only.elf`。起動コード・ベクター・KM003Cのメタデータを
 持たない**容量確認専用ファイル**です。書き込みツールに渡すものではありません。
-`sizecheck/` の最小標準ヘッダーとランタイムも、この確認用です。
+`freestanding/include/` の最小標準ヘッダーと `runtime.c` はオフラインのARMビルド用です。
+`sizecheck/runtime.c` は容量確認専用の呼出し口とバッファです。
 実際の移植では移植先のCライブラリ／SDKを使います。
 
 Unicorn 2.1.4を追加すると、ARM命令そのものの動作も確認できます。
@@ -64,3 +65,8 @@ ARMエミュレーター上でも実測由来の全5ページがPythonと一致�
 この値は実機上の処理時間やPDとの共存を示すものではありません。
 
 純正側の調査結果は [STOCK-207.md](../docs/STOCK-207.md) を参照してください。
+
+内部フラッシュへ別置きする接続試作を `overlay207/` に追加しました。
+264バイトの判定処理と約4 KBの拡張領域をリンクし、純正GUIへの呼び出し・復帰、
+欠落／破損時の切替をARM命令で確認しています。QR画面と更新ツールは未実装です。
+配置、検証コマンド、復旧計画は [OVERLAY-207.md](../docs/OVERLAY-207.md) に記載しています。

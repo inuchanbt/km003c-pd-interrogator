@@ -61,7 +61,9 @@ def main():
                  for src, dst, length, helper in entries],
         ram_code_sha256=hashlib.sha256(ram[:0x7a0]).hexdigest(),
         gui=dict(task_entry='0x1ebb0', task_create_call='0x1100e',
-                 loop='0x1ec04', handler_candidate='0x39a18', delay_call='0x4cffc', delay_argument=10),
+                 loop='0x1ec04', handler_candidate='0x39a18', delay_call='0x4cffc', delay_argument=10,
+                 pendsv_entry=hex(struct.unpack_from('<I', image, 14 * 4)[0] & ~1),
+                 r8_context='Saved at 0x438a and restored at 0x43a8 with R4-R11'),
         display=dict(ram_flush_candidate='0x1fff8000', pixel_loop='0x1fff8110',
                      mutex_object='0x1fffb4c4', acquire_candidate='0x4cbe6',
                      release_candidate='0x4ccec', completion_candidate='0x2a696',
@@ -76,6 +78,7 @@ def main():
         ('RAM-to-flash veneers', ram[0x744:0x7a0], SRAM + 0x744),
         ('GUI task creation', image[0x10f98 - BASE:0x11016 - BASE], 0x10f98),
         ('GUI task', image[0x1ebb0 - BASE:0x1ec14 - BASE], 0x1ebb0),
+        ('PendSV task register save/restore', image[0x4376 - BASE:0x43c2 - BASE], 0x4376),
     ]
     lines = []
     for title, data, address in sections:

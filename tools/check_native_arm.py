@@ -1,7 +1,7 @@
 """Run the cross-compiled portable C in an ARM emulator, without hardware.
 
-Requires unicorn==2.1.4. Input is check_native_size.py's synthetic size probe,
-never a stock/DFU image. Also checks decoded RGB565 rows with the phone decoder.
+Requires unicorn==2.1.4. Input is a synthetic size probe or --overlay stock-free
+extension ELF, never a stock/DFU image. Also checks decoded RGB565 rows.
 """
 import argparse
 import base64
@@ -44,6 +44,7 @@ def load_elf(cpu, image):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf', type=Path)
+    parser.add_argument('--overlay', action='store_true', help='Check the stock-free extension ELF instead')
     args = parser.parse_args()
     from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS
     from unicorn.arm_const import (UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC,
@@ -52,8 +53,9 @@ def main():
     cpu.mem_map(0, 0x100000)
     cpu.mem_map(0x1fff8000, 0x2f000)
     symbols = load_elf(cpu, args.elf.read_bytes())
-    if 'kpd_sizecheck' not in symbols:
-        raise ValueError('Only the synthetic size probe is supported')
+    marker = 'kpd207_header' if args.overlay else 'kpd_sizecheck'
+    if marker not in symbols:
+        raise ValueError('Expected synthetic size probe or explicitly selected stock-free overlay')
 
     def call(name, *arguments):
         cpu.reg_write(UC_ARM_REG_SP, 0x20026000)

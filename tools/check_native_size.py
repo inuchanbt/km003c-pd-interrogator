@@ -33,10 +33,10 @@ def main():
               '-mcpu=cortex-m4', '-mthumb', '-std=c11', '-Oz', '-DNDEBUG',
               '-ffreestanding', '-fno-builtin', '-ffunction-sections', '-fdata-sections',
               '-fstack-usage', '-Wall', '-Wextra', '-Werror', '-pedantic',
-              '-I', str(ROOT / 'native/sizecheck/include'), '-I', str(ROOT / 'native')]
+              '-I', str(ROOT / 'native/freestanding/include'), '-I', str(ROOT / 'native')]
     objects = []
-    for source in ('native/kpd.c', 'native/vendor/qrcodegen/qrcodegen.c', 'native/sizecheck/runtime.c'):
-        obj = args.output / (Path(source).stem + '.o')
+    for source in ('native/kpd.c', 'native/vendor/qrcodegen/qrcodegen.c', 'native/runtime.c', 'native/sizecheck/runtime.c'):
+        obj = args.output / ('probe.o' if source == 'native/sizecheck/runtime.c' else Path(source).stem + '.o')
         subprocess.run([*common, '-c', str(ROOT / source), '-o', str(obj)], check=True)
         objects.append(obj)
     elf = args.output / 'sizecheck-only.elf'

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: MIT. Minimal offline probe declarations. */
 #include <stddef.h>
 void *memcpy(void *dest, const void *src, size_t length);
 void *memmove(void *dest, const void *src, size_t length);
