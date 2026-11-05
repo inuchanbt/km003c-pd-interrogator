@@ -316,6 +316,13 @@ def main():
         raise AssertionError('Expected five pages for this reference information result')
     owned_id = decoded['measurement_id']
     owned_binary = bytes(cpu.mem_read(frozen, binary_length))
+    # Actual cleanup regression: a new SPR-only receive during native Ready
+    # must not remove EPR PDOs or advance the finished measurement's ID.
+    cpu.mem_write(context + 0x3d5, b'\0\x04\x06')
+    cpu.mem_write(context + 0x4e, struct.pack('<H', 0x51a1))
+    cpu.mem_write(context + 0xa8, spr)
+    for delta in (20, 40):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(context + 0x29, b'\0'); call(symbols['kpd207_gui_tick'])
     buttons((20, 19), now + 100); buttons((20, 19), now + 850)

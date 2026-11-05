@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 from pdinfo import model, transfer
-from tests.test_native import CacheCapture, Transfer, U8, cache_sample
+from tests.test_native import CacheCapture, CacheSample, Transfer, U8, cache_sample
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,7 +26,9 @@ class Info(C.Structure):
                 ('ring_total', C.c_uint16), ('ring_position', C.c_uint16),
                 ('stage', U8), ('step', U8), ('current', U8), ('capture_status', U8),
                 ('ring_ready', C.c_bool), ('attached', C.c_bool), ('pps', C.c_bool), ('started', C.c_bool),
-                ('tx_length', U8), ('tx_wire', U8 * 30)]
+                ('tx_length', U8), ('tx_wire', U8 * 30), ('reserved', U8),
+                ('pdos', CacheSample),
+                ('id', U8 * 8), ('frozen', C.c_bool)]
 
 
 def record(wire, sop=0, tx=False):
@@ -59,6 +61,7 @@ class InfoTests(unittest.TestCase):
             'kpd207_info_tick': [C.POINTER(Info), C.c_bool, C.c_bool, C.c_uint32],
             'kpd207_info_command': [C.POINTER(Info), C.POINTER(U8)],
             'kpd207_info_sent': [C.POINTER(Info), C.c_uint32],
+            'kpd207_info_hold': [C.POINTER(Info), C.POINTER(CacheCapture)],
             'kpd207_info_records': [C.POINTER(Info), C.POINTER(U8), C.c_uint, C.c_uint32],
             'kpd207_info_freeze': [C.POINTER(CacheCapture), C.POINTER(Info), C.POINTER(Transfer)],
         }.items():
@@ -240,6 +243,20 @@ class InfoTests(unittest.TestCase):
             self.feed(w, tx=True)
             self.assertEqual(self.info.stage, 4 if ext in (2, 4, 0x8002, 0x8004) else 6)
             self.assertEqual(bytes(self.info.tx_wire[:self.info.tx_length]), w)
+
+    def test_completion_keeps_pdos_and_id_when_native_cleanup_receives_new_spr(self):
+        c = CacheCapture(flags=4); c.result = cache_sample(epr=bytes(range(44)))
+        c.id[:] = bytes.fromhex('0102030405060708')
+        self.info.stage = 6; self.info.capture_status = 1
+        self.dll.kpd207_info_hold(C.byref(self.info), C.byref(c))
+        first, second = Transfer(), Transfer()
+        self.assertTrue(self.dll.kpd207_info_freeze(C.byref(c), C.byref(self.info), C.byref(first)))
+        c.result = cache_sample(sequence=2); c.id[7] += 1
+        self.dll.kpd207_info_hold(C.byref(self.info), C.byref(c))
+        self.assertTrue(self.dll.kpd207_info_freeze(C.byref(c), C.byref(self.info), C.byref(second)))
+        self.assertEqual(bytes(first.binary[:first.length]), bytes(second.binary[:second.length]))
+        self.dll.kpd207_info_begin(C.byref(self.info))
+        self.assertFalse(self.info.frozen)
 
 
 if __name__ == '__main__':

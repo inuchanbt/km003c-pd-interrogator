@@ -12,6 +12,7 @@ void kpd207_info_begin(struct kpd207_info *i) {
     memset(i->fields, 0, sizeof(i->fields));
     i->stage = KPD207_INFO_IDLE; i->step = 0; i->current = 0;
     i->capture_status = 0; i->attached = true; i->started = false;
+    i->frozen = false;
 }
 
 void kpd207_info_stop(struct kpd207_info *i, uint8_t status) {
@@ -196,13 +197,19 @@ bool kpd207_info_records(struct kpd207_info *i, const uint8_t *b, unsigned n, ui
     return true;
 }
 
+void kpd207_info_hold(struct kpd207_info *i, const struct kpd207_capture *c) {
+    if (i->frozen || i->stage != KPD207_INFO_DONE || !(c->flags & KPD207_CAPTURE_READY)) return;
+    i->pdos = c->result; memcpy(i->id, c->id, 8); i->frozen = true;
+}
+
 bool kpd207_info_freeze(const struct kpd207_capture *c, const struct kpd207_info *i, struct kpd_transfer *out) {
-    if (!(c->flags & KPD207_CAPTURE_READY)) return false;
+    if (!i->frozen && !(c->flags & KPD207_CAPTURE_READY)) return false;
+    const struct kpd207_sample *p = i->frozen ? &i->pdos : &c->result;
     struct kpd_snapshot snapshot = {0};
-    memcpy(snapshot.id, c->id, 8); snapshot.capture_status = i->capture_status;
-    snapshot.fields[KPD_SPR_PDOS] = (struct kpd_field){c->result.spr, c->result.spr_length, KPD_OBSERVED, true};
-    if (c->result.epr_length)
-        snapshot.fields[KPD_EPR_PDOS] = (struct kpd_field){c->result.epr, c->result.epr_length, KPD_OBSERVED, true};
+    memcpy(snapshot.id, i->frozen ? i->id : c->id, 8); snapshot.capture_status = i->capture_status;
+    snapshot.fields[KPD_SPR_PDOS] = (struct kpd_field){p->spr, p->spr_length, KPD_OBSERVED, true};
+    if (p->epr_length)
+        snapshot.fields[KPD_EPR_PDOS] = (struct kpd_field){p->epr, p->epr_length, KPD_OBSERVED, true};
     for (unsigned n = 2; n < KPD_FIELDS; ++n) {
         const struct kpd207_info_field *f = &i->fields[n - 2];
         snapshot.fields[n] = (struct kpd_field){f->raw, f->length, f->status, f->present != 0};

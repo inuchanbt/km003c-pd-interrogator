@@ -128,6 +128,7 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
     uint8_t phase = p[0x29];
     if (!phase) {
         if (i->attached) kpd207_info_stop(i, KPD_RESET);
+        kpd207_info_hold(i, c);
         /* Arm a new attachment without clearing the retained completed result. */
         i->stage = KPD207_INFO_IDLE;
         i->ring_ready = false; records(i, now);
@@ -144,6 +145,9 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
         pps = (pdo >> 28) == 12; /* Actual selected native PDO is PPS APDO. */
     }
     kpd207_info_tick(i, ready, pps, now);
+    /* Native reset may receive new SPR-only PDOs before it reaches idle.
+     * Completed information keeps the PDOs and ID from completion time. */
+    kpd207_info_hold(i, c);
     if (!ready || i->stage != KPD207_INFO_COMMAND || (p[0x27] & 5)) return;
     uint8_t command[7];
     unsigned length = kpd207_info_command(i, command);

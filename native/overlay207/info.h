@@ -17,8 +17,13 @@ struct kpd207_info {
     bool ring_ready, attached, pps, started;
     /* Private diagnostic only, never included in the transfer schema. */
     uint8_t tx_length, tx_wire[30];
+    uint8_t reserved;
+    struct kpd207_sample pdos;
+    uint8_t id[8];
+    bool frozen;
 };
-_Static_assert(sizeof(struct kpd207_info_field) == 268 && sizeof(struct kpd207_info) == 2192,
+_Static_assert(sizeof(struct kpd207_info_field) == 268 && offsetof(struct kpd207_info, pdos) == 2192 &&
+               sizeof(struct kpd207_info) == 2280,
                "Information state ABI used by private inspectors");
 enum { KPD207_INFO_IDLE, KPD207_INFO_SETTLE, KPD207_INFO_COMMAND,
        KPD207_INFO_TX, KPD207_INFO_REPLY, KPD207_INFO_GUARD, KPD207_INFO_DONE,
@@ -29,6 +34,7 @@ void kpd207_info_tick(struct kpd207_info *, bool ready, bool pps, uint32_t now);
 /* Native console's three-byte prefix (SOP + input PD header), then payload. */
 unsigned kpd207_info_command(const struct kpd207_info *, uint8_t out[7]);
 void kpd207_info_sent(struct kpd207_info *, uint32_t now);
+void kpd207_info_hold(struct kpd207_info *, const struct kpd207_capture *);
 bool kpd207_info_records(struct kpd207_info *, const uint8_t *, unsigned, uint32_t now);
 bool kpd207_info_freeze(const struct kpd207_capture *, const struct kpd207_info *, struct kpd_transfer *);
 #endif

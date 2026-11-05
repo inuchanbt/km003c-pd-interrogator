@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--require-current', action='store_true', help='Require opened QR to equal the latest owned capture')
     parser.add_argument('--information', action='store_true', help='Decode the information-build anchor ABI (2160 bytes at +248)')
     parser.add_argument('--request-trace', action='store_true', help='Read the extra 32-byte TX diagnostic in the revised information build')
+    parser.add_argument('--completed-pdos', action='store_true', help='Read the completion-time PDO/ID copy in the final information build')
     args = parser.parse_args()
     if args.output.exists() or not args.output.resolve().is_relative_to((ROOT / 'artifacts').resolve()):
         parser.error('Report must be a NEW file inside ignored artifacts/')
@@ -58,16 +59,20 @@ def main():
     rng_phase, discarded = read(state + 244, 2)
     if not flags & 8 or rng_phase != 2 or discarded != 11:
         raise AssertionError('Native RNG seed/restoration did not complete')
-    ready = bool(flags & 4)
+    held = read(state + 248 + 2192, 88) if args.completed_pdos else None
+    if held and held[86] > 1: raise AssertionError('Invalid completion-copy flag')
+    ready = bool(flags & 4) or bool(held and held[86])
     if ready == args.expect_empty: raise AssertionError('Unexpected owned capture readiness')
     report = dict(schema=1, usb_access=False, atomic_snapshot=False,
                   seed_ready=True, rng_restored=True, capture_ready=ready)
     if ready:
-        result = capture[78:156]
+        result = held[:78] if held and held[86] else capture[78:156]
         spr_len, epr_len = result[4:6]
         if not 0 < spr_len <= 28 or spr_len % 4 or epr_len > 44 or epr_len % 4:
             raise AssertionError('Owned PDO lengths outside supported bounds')
-        snapshot = model.new_snapshot('km003c', capture[156:164].hex())
+        identifier = held[78:86] if held and held[86] else capture[156:164]
+        snapshot = model.new_snapshot('km003c', identifier.hex())
+        if held: report['completion_pdos_held'] = bool(held[86])
         model.set_field(snapshot, 'spr_pdos', 'observed', result[6:6 + spr_len])
         if epr_len: model.set_field(snapshot, 'epr_pdos', 'observed', result[34:34 + epr_len])
         snapshot['captured_at'] = None
