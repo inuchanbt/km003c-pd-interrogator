@@ -115,9 +115,11 @@ static void packet(struct kpd207_info *i, bool tx, uint8_t sop, const uint8_t *w
         if (sop || i->stage != KPD207_INFO_TX) return;
         uint8_t cmd[7]; unsigned len = command(i->current, cmd);
         if (!len || type != (cmd[1] & 31)) return;
+        i->tx_length = (uint8_t)n; memcpy(i->tx_wire, w, n);
         bool good = i->current == KPD_MANUFACTURER ?
-            (h & 0x8000) && count == 2 && (u16(p) == 2 || u16(p) == 4) &&
-                p[2] == 0 && p[3] == 0 && (u16(p) != 4 || (p[4] == 0 && p[5] == 0)) :
+            (h & 0x8000) && count == 2 && !(u16(p) & 0x7e00) &&
+                ((u16(p) & 511) == 2 || (u16(p) & 511) == 4) &&
+                p[2] == 0 && p[3] == 0 && ((u16(p) & 511) != 4 || (p[4] == 0 && p[5] == 0)) :
             i->current == KPD_SOURCE_IDENTITY ? !(h & 0x8000) && count == 1 && memcmp(p, cmd + 3, 4) == 0 :
             !(h & 0x8000) && count == 0;
         if (!good) { kpd207_info_stop(i, KPD_TX_FAILED); i->capture_status = 2; return; }

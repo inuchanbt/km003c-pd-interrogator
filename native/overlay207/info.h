@@ -15,8 +15,10 @@ struct kpd207_info {
     uint16_t ring_total, ring_position;
     uint8_t stage, step, current, capture_status;
     bool ring_ready, attached, pps, started;
+    /* Private diagnostic only, never included in the transfer schema. */
+    uint8_t tx_length, tx_wire[30];
 };
-_Static_assert(sizeof(struct kpd207_info_field) == 268 && sizeof(struct kpd207_info) == 2160,
+_Static_assert(sizeof(struct kpd207_info_field) == 268 && sizeof(struct kpd207_info) == 2192,
                "Information state ABI used by private inspectors");
 enum { KPD207_INFO_IDLE, KPD207_INFO_SETTLE, KPD207_INFO_COMMAND,
        KPD207_INFO_TX, KPD207_INFO_REPLY, KPD207_INFO_GUARD, KPD207_INFO_DONE,

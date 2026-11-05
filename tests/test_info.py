@@ -25,7 +25,8 @@ class Info(C.Structure):
     _fields_ = [('fields', InfoField * 8), ('since', C.c_uint32),
                 ('ring_total', C.c_uint16), ('ring_position', C.c_uint16),
                 ('stage', U8), ('step', U8), ('current', U8), ('capture_status', U8),
-                ('ring_ready', C.c_bool), ('attached', C.c_bool), ('pps', C.c_bool), ('started', C.c_bool)]
+                ('ring_ready', C.c_bool), ('attached', C.c_bool), ('pps', C.c_bool), ('started', C.c_bool),
+                ('tx_length', U8), ('tx_wire', U8 * 30)]
 
 
 def record(wire, sop=0, tx=False):
@@ -40,6 +41,7 @@ class InfoTests(unittest.TestCase):
         cc = os.environ.get('KPD_CC') or shutil.which('cc') or shutil.which('clang')
         if not cc:
             raise RuntimeError('KPD_CC must name a C11 compiler')
+        (ROOT / 'artifacts').mkdir(exist_ok=True)
         cls.folder = tempfile.TemporaryDirectory(dir=ROOT / 'artifacts')
         binary = Path(cls.folder.name) / ('info.dll' if sys.platform == 'win32' else 'info.so')
         args = [cc, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic', '-shared']
@@ -98,7 +100,7 @@ class InfoTests(unittest.TestCase):
         self.dll.kpd207_info_sent(C.byref(self.info), self.now)
         wire = bytes(out[1:length])
         if expected == '00869000000000':
-            wire = bytes.fromhex('86a20400000000000000')  # Actual native ext-header insertion.
+            wire = bytes.fromhex(self.events[13]['wire_hex'])  # Native uses Chunked=1, chunk 0.
         self.assertTrue(self.feed(wire, tx=True))
         self.assertEqual(self.info.stage, 4)
 
@@ -229,6 +231,15 @@ class InfoTests(unittest.TestCase):
             self.setUp(); self.tick(ready=ready_first); self.tick(6000, ready=False)
             self.assertEqual((self.info.stage, self.info.capture_status), (6, 2))
             self.assertTrue(all(f.status == 0 for f in self.info.fields))
+
+    def test_manufacturer_tx_accepts_chunked_and_unchunked_target_ref_only(self):
+        for ext in (2, 4, 0x8002, 0x8004, 0x8404, 0x8804, 0x8204):
+            self.setUp(); self.info.current = 7; self.info.stage = 2
+            self.dll.kpd207_info_sent(C.byref(self.info), 0)
+            w = struct.pack('<HH', 0xa086, ext) + bytes(6)
+            self.feed(w, tx=True)
+            self.assertEqual(self.info.stage, 4 if ext in (2, 4, 0x8002, 0x8004) else 6)
+            self.assertEqual(bytes(self.info.tx_wire[:self.info.tx_length]), w)
 
 
 if __name__ == '__main__':

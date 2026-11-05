@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--compare-fixture', action='store_true')
     parser.add_argument('--require-current', action='store_true', help='Require opened QR to equal the latest owned capture')
     parser.add_argument('--information', action='store_true', help='Decode the information-build anchor ABI (2160 bytes at +248)')
+    parser.add_argument('--request-trace', action='store_true', help='Read the extra 32-byte TX diagnostic in the revised information build')
     args = parser.parse_args()
     if args.output.exists() or not args.output.resolve().is_relative_to((ROOT / 'artifacts').resolve()):
         parser.error('Report must be a NEW file inside ignored artifacts/')
@@ -84,6 +85,10 @@ def main():
             report['information_stage'] = info[2152]
             report['information_attached'] = bool(info[2157])
             report['field_states'] = {name: f['status'] for name, f in snapshot['fields'].items()}
+            if args.request_trace:
+                diag = read(state + 248 + 2160, 32)
+                if diag[0] > 30: raise AssertionError('Invalid TX trace length')
+                report['last_native_tx'] = diag[1:1 + diag[0]].hex()
         report.update(snapshot=snapshot, spr_count=spr_len // 4, epr_count=epr_len // 4)
         if args.compare_fixture:
             expected = model.new_snapshot('km003c')

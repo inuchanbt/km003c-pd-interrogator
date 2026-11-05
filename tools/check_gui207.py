@@ -300,7 +300,7 @@ def main():
     for typ, reply in ((24, 9), (17, 10), (18, 11), (23, 12), (6, 14), (15, None)):
         if cpu.mem_read(context + 0x4c, 1)[0] & 31 != typ:
             raise AssertionError('GUI did not enqueue the expected native request')
-        if typ == 6: log('86 a2 04 00 00 00 00 00 00 00', tx=True)
+        if typ == 6: log(events[13]['wire_hex'], tx=True)
         elif typ == 15: log('8f 10 01 a8 00 ff', tx=True)
         else: log(struct.pack('<H', 0x80 | typ), tx=True)
         log('af 11 81 a8 00 ff' if reply is None else events[reply]['wire_hex'])

@@ -81,7 +81,7 @@ def main():
             raise AssertionError(f'Native console enqueue mismatch for type {type_}: {command.hex()}, {state().hex()}')
         if type_ == 6:
             if bytes(cpu.mem_read(ctx + 0x8c, 4)) != bytes(4): raise AssertionError('Target/Ref was not copied')
-            log('86 a2 04 00 00 00 00 00 00 00', tx=True)
+            log(events[13]['wire_hex'], tx=True)
         elif type_ == 15:
             if bytes(cpu.mem_read(ctx + 0x8c, 4)) != bytes.fromhex('01 a8 00 ff'): raise AssertionError('Identity request changed')
             log('8f 10 01 a8 00 ff', tx=True)
