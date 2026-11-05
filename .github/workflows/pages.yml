@@ -46,7 +46,9 @@ jobs:
       - run: python tools/prepare_native_host.py --fetch
       - run: cargo +1.99.1 fmt --manifest-path native-host/Cargo.toml -- --check
       - run: cargo +1.99.1 test --manifest-path native-host/Cargo.toml --locked
-      - run: cargo +1.99.1 test --manifest-path .deps/native-host/km003c-rs/km003c-lib/Cargo.toml --features hw23-overlay --lib firmware:: --locked
+      - run: >-
+          cargo +1.99.1 test --manifest-path .deps/native-host/km003c-rs/km003c-lib/Cargo.toml
+          --features hw23-overlay --lib firmware:: --locked
       - run: cargo +1.99.1 build --manifest-path native-host/Cargo.toml --locked
   deploy:
     needs: [test, native-host]
