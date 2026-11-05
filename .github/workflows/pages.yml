@@ -25,8 +25,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt unicorn==2.1.4
       - run: python -m unittest discover -s tests -v
+      - run: python tools/check_native_size.py --clang /usr/bin/clang
+      - run: python tools/check_native_arm.py artifacts/native-size/sizecheck-only.elf
       - run: node --check phone/app.js && node --check phone/codec.js && node --check phone/store.js
   deploy:
     needs: test

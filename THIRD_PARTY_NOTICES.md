@@ -1,5 +1,22 @@
 # Third-party notices
 
+## Nayuki QR Code generator (C)
+
+`native/vendor/qrcodegen/qrcodegen.c` and `qrcodegen.h` are unmodified from
+[Project Nayuki](https://github.com/nayuki/QR-Code-generator/tree/bcfe1b018cec5f1f91b5705eca5bb4cdd34e9f8d/c),
+commit `bcfe1b018cec5f1f91b5705eca5bb4cdd34e9f8d`.
+The MIT license and copyright notice remain in both source files.
+
+- qrcodegen.c SHA-256: `6a2b9cc65176f2345dde260c74b6d352627e8a0a6385d086ae0e9c5d0913c70c`
+- qrcodegen.h SHA-256: `e82df4bff37d18b5863b9e7486fe6bda1b6cda8c3b9ecebfec473907265cb589`
+
+## Offline analysis tools
+
+The optional stock/ARM analysis scripts use separately installed Unicorn 2.1.4
+and Capstone 5.0.7. Their code is not vendored. See their distributions for their
+licenses. Stock firmware, derived RAM/disassembly, device identity and backups
+are not distributed with this repository.
+
 ## jsQR 1.4.0
 
 `phone/vendor/jsQR.js` is the browser QR decoder from
