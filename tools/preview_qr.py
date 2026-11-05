@@ -6,14 +6,21 @@ from PIL import Image, ImageDraw
 p = argparse.ArgumentParser()
 p.add_argument('directory', type=Path)
 p.add_argument('output', type=Path)
+p.add_argument('--columns', type=int, default=2, help='QRs per row (default: 2)')
 args = p.parse_args()
+if args.columns < 1:
+    p.error('--columns must be positive')
 pages = args.directory.joinpath('pages.txt').read_text(encoding='ascii').splitlines()
-sheet = Image.new('RGB', (24 + len(pages) * 264, 304), 'white')
+if not pages:
+    p.error('pages.txt contains no QR pages')
+columns = min(args.columns, len(pages))
+rows = (len(pages) + columns - 1) // columns
+sheet = Image.new('RGB', (24 + columns * 264, rows * 304), 'white')
 draw = ImageDraw.Draw(sheet)
 for index, _ in enumerate(pages, 1):
     packed = (args.directory / f'qr-{index:02}.bin').read_bytes()
-    left, top = 24 + (index - 1) * 264, 40
-    draw.text((left, 14), f'KPD1 - PAGE {index}/{len(pages)}', fill='black')
+    left, top = 24 + (index - 1) % columns * 264, 40 + (index - 1) // columns * 304
+    draw.text((left, top - 26), f'KPD1 - PAGE {index}/{len(pages)}', fill='black')
     for y in range(49):
         for x in range(49):
             bit = y * 49 + x
