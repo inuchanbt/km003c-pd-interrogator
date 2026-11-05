@@ -10,17 +10,17 @@
 #define KPD_RAW_MAX 260
 #define KPD_BINARY_MAX 2664
 #define KPD_URL_MAX 152
-#define KPD_CHUNK 47
+#define KPD_CHUNK 44
 #define KPD_QR_SIZE 49
 #define KPD_QR_PACKED 301
 #define KPD_QR_BUFFER 302
 #define KPD_SCREEN_SIZE 240
-#define KPD_IMPORT_URL "https://inuchanbt.github.io/km003c-pd-interrogator/#"
+#define KPD_IMPORT_URL "https://inuchanbt.github.io/km003c-pd-interrogator/?v=2#"
 
 enum kpd_status {
     KPD_NOT_REQUESTED, KPD_PASS, KPD_OBSERVED, KPD_UNSUPPORTED,
     KPD_NO_RESPONSE, KPD_TX_FAILED, KPD_REJECTED, KPD_BUSY,
-    KPD_RESET, KPD_INVALID, KPD_PARTIAL, KPD_UNKNOWN
+    KPD_RESET, KPD_INVALID, KPD_PARTIAL, KPD_UNKNOWN, KPD_EMULATION_ENABLED
 };
 
 enum kpd_field_id {

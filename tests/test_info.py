@@ -26,7 +26,7 @@ class Info(C.Structure):
                 ('ring_total', C.c_uint16), ('ring_position', C.c_uint16),
                 ('stage', U8), ('step', U8), ('current', U8), ('capture_status', U8),
                 ('ring_ready', C.c_bool), ('attached', C.c_bool), ('pps', C.c_bool), ('started', C.c_bool),
-                ('tx_length', U8), ('tx_wire', U8 * 30), ('reserved', U8),
+                ('tx_length', U8), ('tx_wire', U8 * 30), ('cable_emulation', U8),
                 ('pdos', CacheSample),
                 ('id', U8 * 8), ('frozen', C.c_bool)]
 
@@ -257,6 +257,14 @@ class InfoTests(unittest.TestCase):
         self.assertEqual(bytes(first.binary[:first.length]), bytes(second.binary[:second.length]))
         self.dll.kpd207_info_begin(C.byref(self.info))
         self.assertFalse(self.info.frozen)
+
+    def test_native_emarker_setting_is_preserved_without_changing_identity_bytes(self):
+        for mode in (0, 1, 2):
+            self.setUp(); self.info.cable_emulation = mode
+            self.event(0); self.event(1)
+            raw, state = self.raw('cable_identity')
+            self.assertEqual(raw, bytes.fromhex(self.events[1]['wire_hex'])[2:])
+            self.assertEqual(state, 'emulation_enabled' if mode else 'observed')
 
 
 if __name__ == '__main__':

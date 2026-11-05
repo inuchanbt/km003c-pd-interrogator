@@ -2,7 +2,7 @@
 #include "kpd.h"
 #include "vendor/qrcodegen/qrcodegen.h"
 
-_Static_assert(sizeof(KPD_IMPORT_URL) - 1 == 52, "URL budget changed");
+_Static_assert(sizeof(KPD_IMPORT_URL) - 1 == 56, "URL budget changed");
 _Static_assert(KPD_QR_BUFFER == qrcodegen_BUFFER_LEN_FOR_VERSION(8), "QR buffer");
 _Static_assert((KPD_BINARY_MAX + KPD_CHUNK - 1) / KPD_CHUNK <= 64, "page count");
 
@@ -26,7 +26,7 @@ bool kpd_freeze(const struct kpd_snapshot *snapshot, struct kpd_transfer *out) {
         return false;
     for (unsigned i = 0; i < KPD_FIELDS; ++i) {
         const struct kpd_field *f = &snapshot->fields[i];
-        if (f->status > KPD_UNKNOWN || f->length > KPD_RAW_MAX ||
+        if (f->status > KPD_EMULATION_ENABLED || f->length > KPD_RAW_MAX ||
             (!f->present && f->length != 0) || (f->length != 0 && f->raw == NULL))
             return false;
         /* PDO/VDO fields must be whole objects, as in the host model. */

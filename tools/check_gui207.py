@@ -178,6 +178,7 @@ def main():
     for event in json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text()): collector.feed(event)
     spr, epr = (bytes.fromhex(fixture['fields'][name]['raw']) for name in ('spr_pdos', 'epr_pdos'))
     context = 0x20000004
+    cpu.mem_write(context, b'\0')  # Native PD mode; cable-only uses mode 4.
     cpu.mem_write(context + 0x29, b'\x24')
     cpu.mem_write(context + 0x3d5, b'\x08\x02\x04')
     cpu.mem_write(context + 0x10c, struct.pack('<H', 0x51a1))
@@ -323,6 +324,12 @@ def main():
     cpu.mem_write(context + 0xa8, spr)
     for delta in (20, 40):
         cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
+    # A native e-Marker-only scan uses another mode. Even if its phase/cache
+    # resembles PD Ready, it must not replace the finished PD capture.
+    cpu.mem_write(context, b'\x04')
+    cpu.mem_write(context + 0x3d6, b'\x08\x09')
+    for delta in (60, 80):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(context + 0x29, b'\0'); call(symbols['kpd207_gui_tick'])
     buttons((20, 19), now + 100); buttons((20, 19), now + 850)
@@ -336,7 +343,20 @@ def main():
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     if word(input_device + 0x5c) != original_group or heap_free()[0] != after_close[0]:
         raise AssertionError('Information screen leaked memory or native input ownership')
+    # A new real PD scan cannot adopt that cable-only cache. It needs a new
+    # receive and two stable observations, then obtains a different ID.
+    cpu.mem_write(context, b'\0')
+    cpu.mem_write(context + 0x29, b'\x24')
+    cpu.mem_write(0x1fffba20, struct.pack('<I', now + 900)); call(symbols['kpd207_gui_tick'])
+    if cpu.mem_read(source + 56 + 179, 1)[0] & 4 or cpu.mem_read(source + 248 + 2278, 1)[0]:
+        raise AssertionError('New PD scan adopted a cable-only cache or old completed result')
+    cpu.mem_write(context + 0x3d6, b'\x09\x0a')
+    for delta in (920, 940):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
+    if not cpu.mem_read(source + 56 + 179, 1)[0] & 4 or bytes(cpu.mem_read(source + 56 + 156, 8)) == bytes.fromhex(owned_id):
+        raise AssertionError('Repeated native PD scan did not capture a fresh measurement ID')
     print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
+    print('Native mode isolation: cable-only preserved the saved PD result; new PD rejected stale cache and obtained a fresh ID.')
 
 
 if __name__ == '__main__':

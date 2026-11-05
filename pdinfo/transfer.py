@@ -11,7 +11,7 @@ from .model import FIELDS, STATES, ORIGINS, CAPTURE_STATES, new_snapshot, set_fi
 PAGE_BYTES = 152  # Version 8 / M, byte mode; includes the ASCII envelope.
 CHUNK_BYTES = 81  # 108 base64 characters + 37-character envelope = 145 bytes.
 MAX_PAGES = 64
-DEFAULT_IMPORT_URL = 'https://inuchanbt.github.io/km003c-pd-interrogator/'
+DEFAULT_IMPORT_URL = 'https://inuchanbt.github.io/km003c-pd-interrogator/?v=2'
 PAGE_RE = re.compile(r'^KPD1:([0-9a-f]{16}):([0-9]{2})/([0-9]{2}):([0-9A-F]{8}):([A-Za-z0-9_-]+)$')
 
 
@@ -77,9 +77,9 @@ def importer_prefix(base_url):
     url = urlsplit(base_url)
     local = url.hostname in ('localhost', '127.0.0.1', '[::1]', '::1')
     if (url.scheme != 'https' and not (url.scheme == 'http' and local)
-            or not url.netloc or url.username or url.password or url.query or url.fragment
-            or '#' in base_url or '?' in base_url):
-        raise ValueError('Use an HTTPS importer URL without credentials, query, or fragment')
+            or not url.netloc or url.username or url.password or url.query not in ('', 'v=2') or url.fragment
+            or '#' in base_url or ('?' in base_url and url.query != 'v=2')):
+        raise ValueError('Use an HTTPS importer URL without credentials or fragment; only the ?v=2 query is supported')
     return base_url + '#'
 
 

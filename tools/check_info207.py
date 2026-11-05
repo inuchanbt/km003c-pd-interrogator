@@ -104,6 +104,21 @@ def main():
         actual = struct.unpack('<H', cpu.mem_read(ctx + 0x780, 2))[0]
         if struct.unpack('<H', cpu.mem_read(info + 2148, 2))[0] != actual:
             raise AssertionError('Independent ring cursor stopped following committed records')
+    # A separate native cable-only operation must preserve the completed PD
+    # fields. Returning to actual PD mode starts fresh with the native setting.
+    completed = bytes(cpu.mem_read(info, 2144))
+    cpu.mem_write(ctx, b'\x04')
+    tick(1)
+    log(events[1]['wire_hex'], 1)
+    tick(1)
+    if bytes(cpu.mem_read(info, 2144)) != completed or state()[0] != 0:
+        raise AssertionError('Cable-only native mode changed the saved PD measurement')
+    cpu.mem_write(ctx, b'\0'); cpu.mem_write(ctx + 3, b'\x02')
+    tick(1)
+    log(events[0]['wire_hex'], 1, True); log(events[1]['wire_hex'], 1)
+    tick(1)
+    if field(8)[0] != 12 or cpu.mem_read(info + 2191, 1)[0] != 2:
+        raise AssertionError('Native e-Marker setting did not reach the QR field status')
     # A stalled GUI cannot silently call missing packets successful.
     cpu.mem_write(info + 2152, bytes([4, 0, 2, 0, 1, 1, 0, 1]))
     for _ in range(41): log('81 01')  # 328 bytes > ring capacity.

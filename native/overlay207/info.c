@@ -13,6 +13,7 @@ void kpd207_info_begin(struct kpd207_info *i) {
     i->stage = KPD207_INFO_IDLE; i->step = 0; i->current = 0;
     i->capture_status = 0; i->attached = true; i->started = false;
     i->frozen = false;
+    i->cable_emulation = 0;
 }
 
 void kpd207_info_stop(struct kpd207_info *i, uint8_t status) {
@@ -91,6 +92,9 @@ void kpd207_info_sent(struct kpd207_info *i, uint32_t now) {
 
 static void finish(struct kpd207_info *i, unsigned name, uint8_t status, uint32_t now) {
     struct kpd207_info_field *f = field(i, name);
+    if (name == KPD_CABLE_IDENTITY && status == KPD_OBSERVED &&
+        (i->cable_emulation == 1 || i->cable_emulation == 2))
+        status = KPD_EMULATION_ENABLED;
     bool requested = i->stage == KPD207_INFO_REPLY && i->current == name;
     if (!requested && status == KPD_OBSERVED && f->status == KPD_PASS) return;
     f->status = requested && status == KPD_OBSERVED ? KPD_PASS : status;

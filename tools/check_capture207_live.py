@@ -94,6 +94,7 @@ def main():
                 diag = read(state + 248 + 2160, 32)
                 if diag[0] > 30: raise AssertionError('Invalid TX trace length')
                 report['last_native_tx'] = diag[1:1 + diag[0]].hex()
+                if diag[31]: report['native_cable_emulation'] = diag[31]
         report.update(snapshot=snapshot, spr_count=spr_len // 4, epr_count=epr_len // 4)
         if args.compare_fixture:
             expected = model.new_snapshot('km003c')

@@ -298,6 +298,11 @@ class PhoneTests(unittest.TestCase):
             model.set_field(snap,'source_cap_ext','observed',bytes(range(25)))
             vectors.append(dict(snapshot=snap,pages=transfer.encode_pages(snap),
                                 url_pages=transfer.encode_pages(snap,base_url=transfer.DEFAULT_IMPORT_URL)))
+        simulated=model.new_snapshot('km003c','0000000000000007')
+        simulated['capture_status']='completed'
+        model.set_field(simulated,'cable_identity','emulation_enabled',struct.pack('<5I',0xff00a841,0x1c600000,0,0,0x000a4644))
+        vectors.append(dict(snapshot=simulated,pages=transfer.encode_pages(simulated),
+                            url_pages=transfer.encode_pages(simulated,base_url=transfer.DEFAULT_IMPORT_URL)))
         actual=model.new_snapshot('km003c','0000000000000006')
         actual['capture_status']='imported'
         collector=Collector(actual)

@@ -147,7 +147,7 @@ static bool render(struct screen_state *s) {
             if (row[x * 2] == 0)
                 d->pixels[8 + y * 30 + x / 8] |= (uint8_t)(0x80u >> (x % 8));
     }
-    /* Up to 57 pages for the bounded maximum schema, outside quiet zone. */
+    /* Up to 61 pages for the bounded maximum schema, outside quiet zone. */
     char label[] = "SAVED 01/01";
     label[6] = (char)('0' + s->page / 10); label[7] = (char)('0' + s->page % 10);
     label[9] = (char)('0' + d->transfer.pages / 10); label[10] = (char)('0' + d->transfer.pages % 10);

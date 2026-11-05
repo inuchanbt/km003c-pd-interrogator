@@ -4,7 +4,7 @@ let browserStorage=null;try{browserStorage=window.localStorage;}catch{/* In-page
 const transfers=new KPDStore.Store(browserStorage);
 let snapshot=null,stream=null,scanFrame=null;
 const names={spr_pdos:'SPR PDO',epr_pdos:'EPR PDO',revision:'PDリビジョン',source_cap_ext:'電源の識別情報',source_info:'電源のPDP情報',source_status:'電源ステータス',pps_status:'PPSステータス',manufacturer:'メーカー情報',cable_identity:'ケーブルIdentity',source_identity:'電源Identity'};
-const statuses={not_requested:'未要求',pass:'取得成功',observed:'受信を記録',unsupported:'非対応の応答',no_response:'無応答',tx_failed:'送信失敗',rejected:'拒否',busy:'待機応答',reset:'リセット',invalid:'取得失敗',partial:'一部のみ取得',unknown:'不明'};
+const statuses={not_requested:'未要求',pass:'取得成功',observed:'受信を記録',unsupported:'非対応の応答',no_response:'無応答',tx_failed:'送信失敗',rejected:'拒否',busy:'待機応答',reset:'リセット',invalid:'取得失敗',partial:'一部のみ取得',unknown:'不明',emulation_enabled:'e-Markerシミュレーション有効時の記録'};
 function report(error){$('error').textContent=error?.message||String(error||'');}
 function addPages(texts){
   try{

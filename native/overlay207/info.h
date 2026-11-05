@@ -17,7 +17,7 @@ struct kpd207_info {
     bool ring_ready, attached, pps, started;
     /* Private diagnostic only, never included in the transfer schema. */
     uint8_t tx_length, tx_wire[30];
-    uint8_t reserved;
+    uint8_t cable_emulation; /* Native setting at PD start; 0=disabled. */
     struct kpd207_sample pdos;
     uint8_t id[8];
     bool frozen;

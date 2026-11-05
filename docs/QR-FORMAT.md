@@ -1,13 +1,13 @@
 # KPD1 QR transfer — prototype v1
 
-この形式は本体への組み込み前の試作です。変更時はPython・JavaScript・Cの互換テストを同時に更新します。
+本体・PC・スマホで共有する転送形式です。変更時はPython・JavaScript・Cの互換テストを同時に更新します。
 
 ## 外側のテキスト
 
 標準カメラ対応の既定形式は、HTTPSの取込先にKPD1ページをフラグメントとして付けたURLです。
 
 ```text
-https://inuchanbt.github.io/km003c-pd-interrogator/#KPD1:<measurement-id>:<page>/<count>:<CRC32>:<base64url>
+https://inuchanbt.github.io/km003c-pd-interrogator/?v=2#KPD1:<measurement-id>:<page>/<count>:<CRC32>:<base64url>
 ```
 
 取込画面はフラグメントを自動解析し、同じ測定ID・枚数・CRCのページを端末内で集めます。
@@ -16,7 +16,9 @@ URLが別タブで開いても、同じオリジンのlocalStorageから再開�
 保存が拒否された場合は画面で通知し、同じ画面内のカメラでの継続を案内します。
 
 公開先のURLも含めて最大152 ASCIIバイトに収めます。
-既定の51文字の公開先では1枚に47バイトを載せ、実測例は5枚です。
+既定の55文字の公開先では1枚に44バイトを載せ、上限サイズは61枚です。
+`?v=2` は新しい取得状態に対応するページを開くための固定バージョンで、測定データは含みません。
+以前のクエリーなしURL（47バイト分割）も読めます。新しい測定ではデータ量に応じて枚数が変わります。
 画像のVersion・誤り訂正・ピクセル寸法は旧形式と同じです。
 
 従来の生テキスト形式も `--qr-format raw` で生成・復元できます。
@@ -72,10 +74,13 @@ raw_presentは0/1。0のときlengthは0。1かつlength=0は空の生データ�
 
 statusは順に0=not_requested, 1=pass, 2=observed, 3=unsupported,
 4=no_response, 5=tx_failed, 6=rejected, 7=busy, 8=reset, 9=invalid,
-10=partial, 11=unknown。
+10=partial, 11=unknown, 12=emulation_enabled。
 
 `pass`は対応する要求後に期待する応答を観測したことを示します。
 `observed`は受信記録があることを示し、能動要求の成功や規格適合性を保証しません。
+`emulation_enabled`はe-Markerシミュレーション設定（20V5A／EPR50V5A）が有効なPD検出で
+回収したケーブルIdentityです。生VDOはそのまま保持し、特定の応答が実物由来かどうかまでは断定しません。
+値12は末尾への追加で、既存0〜11の意味・並びは変えません。値12の読取りには更新後のデコーダーが必要です。
 旧ログは要求の成功記録があっても生データが残っていない場合があります。
 raw_presentを別途確認し、その場合の値は不明と扱います。
 
@@ -92,4 +97,4 @@ DEMOはoriginで区別し、実測として表示しません。
 要約専用の1枚QR、日時、測定対象の識別ラベル、報告データしか残っていない旧ログの
 転送は次版の検討対象です。
 本体向けCのURL／QRエンコーダーは `native/` に実装し、ホスト版との互換性と
-240×240描画行の復元を確認しています。純正FWからの呼出しと実機表示は未実装です。
+240×240描画行の復元を確認しています。純正FWからの取得・実機QR表示・iPhone取込も確認済みです。

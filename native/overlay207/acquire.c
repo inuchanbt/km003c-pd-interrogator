@@ -64,8 +64,10 @@ static uint16_t u16(volatile const uint8_t *p) {
 static void sample(struct kpd207_sample *s) {
     volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
     memset(s, 0, sizeof(*s));
-    s->phase = p[0x29];
+    uint8_t mode = p[0];
+    s->phase = mode == 0 ? p[0x29] : 0;
     s->sequence[0] = p[0x3d6]; s->sequence[1] = p[0x3d7];
+    if (mode != 0) return; /* Cable-only/other native modes are not PD sessions. */
     uint8_t flags = p[0x3d5];
     bool epr = (flags & 8) != 0;
     uint16_t header = u16(p + (epr ? 0x10c : 0x4e));
@@ -78,7 +80,7 @@ static void sample(struct kpd207_sample *s) {
     s->epr_length = epr ? (uint8_t)bytes : 0;
     for (unsigned i = 0; i < s->spr_length; ++i) s->spr[i] = p[(epr ? 0xf0 : 0xa8) + i];
     for (unsigned i = 0; i < s->epr_length; ++i) s->epr[i] = p[0xa8 + i];
-    s->valid = s->phase == p[0x29] && flags == p[0x3d5] &&
+    s->valid = mode == p[0] && s->phase == p[0x29] && flags == p[0x3d5] &&
         header == u16(p + (epr ? 0x10c : 0x4e)) && extended == u16(p + 0x52) &&
         s->sequence[0] == p[0x3d6] && s->sequence[1] == p[0x3d7];
 }
@@ -126,7 +128,7 @@ __attribute__((noinline))
 void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {
     volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
     uint8_t phase = p[0x29];
-    if (!phase) {
+    if (!phase || p[0] != 0) {
         if (i->attached) kpd207_info_stop(i, KPD_RESET);
         kpd207_info_hold(i, c);
         /* Arm a new attachment without clearing the retained completed result. */
@@ -134,7 +136,10 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
         i->ring_ready = false; records(i, now);
         return;
     }
-    if (!i->attached && i->stage == KPD207_INFO_IDLE) kpd207_info_begin(i);
+    if (!i->attached && i->stage == KPD207_INFO_IDLE) {
+        kpd207_info_begin(i);
+        i->cable_emulation = p[3] & 7;
+    }
     records(i, now);
     bool ready = phase == 0x24 && (c->flags & KPD207_CAPTURE_READY);
     unsigned selected = p[3] >> 4;

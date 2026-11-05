@@ -254,7 +254,7 @@ class NativeTests(unittest.TestCase):
     def test_bad_input_and_stale_qr_are_rejected(self):
         snap, keep = native_snapshot(model.new_snapshot('demo', '0123456789abcdef'))
         frozen = Transfer()
-        for index, attribute, value in [(0, 'status', 12), (0, 'length', 261),
+        for index, attribute, value in [(0, 'status', len(model.STATES)), (0, 'length', 261),
                                          (1, 'length', 3), (3, 'length', 1)]:
             old = getattr(snap.fields[index], attribute)
             setattr(snap.fields[index], attribute, value)
