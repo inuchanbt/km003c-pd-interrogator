@@ -33,8 +33,23 @@ jobs:
       - run: python tools/check_overlay207.py artifacts/overlay207
       - run: python tools/check_native_arm.py artifacts/overlay207/overlay207-offline.elf --overlay
       - run: node --check phone/app.js && node --check phone/codec.js && node --check phone/store.js
+  native-host:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/artifacts/native-host-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt
+      - run: python tools/prepare_native_host.py --fetch
+      - run: cargo +1.99.1 fmt --manifest-path native-host/Cargo.toml -- --check
+      - run: cargo +1.99.1 test --manifest-path native-host/Cargo.toml --locked
+      - run: cargo +1.99.1 test --manifest-path .deps/native-host/km003c-rs/km003c-lib/Cargo.toml --features hw23-overlay --lib firmware:: --locked
+      - run: cargo +1.99.1 build --manifest-path native-host/Cargo.toml --locked
   deploy:
-    needs: test
+    needs: [test, native-host]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

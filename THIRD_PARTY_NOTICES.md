@@ -1,5 +1,20 @@
 # Third-party notices
 
+## Native updater dependencies
+
+The source preparer retrieves, without vendoring private data:
+
+- [okhsunrog/km003c-rs](https://github.com/okhsunrog/km003c-rs/tree/efed50556d7376914bffd510e012aaa98081936f),
+  commit `efed50556d7376914bffd510e012aaa98081936f`, MIT OR Apache-2.0.
+  The isolated `hw23-overlay` patch retains its authentication, AES and update transport;
+  default firmware bounds remain unchanged. Original licenses are retained in the prepared source.
+- [inuchanbt/apdo-doom-on-km003c](https://github.com/inuchanbt/apdo-doom-on-km003c/tree/20622200644f02c6a5e48ad664dc7b8b6fb236ce/bootstrap),
+  commit `20622200644f02c6a5e48ad664dc7b8b6fb236ce`, MIT.
+  Only its independent backup crate and license are prepared for the native host.
+
+These sources stay in ignored `.deps/native-host/`. The patch, source preparer and
+Cargo lockfiles are tracked. Private recovery files and compiled host binaries are not distributed.
+
 ## Nayuki QR Code generator (C)
 
 `native/vendor/qrcodegen/qrcodegen.c` and `qrcodegen.h` are unmodified from

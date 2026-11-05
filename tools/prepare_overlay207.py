@@ -1,7 +1,7 @@
 """Create a PRIVATE, offline stock patch candidate and rollback erase pass.
 
-Not a flasher/container packager. The existing updater intentionally rejects
-these extended images until a separately verified HW2.3 update profile exists.
+Not a flasher/container packager. The generic updater rejects these images;
+the exact-build experimental profile is provided separately by native-host/.
 """
 import argparse
 import hashlib
@@ -38,7 +38,7 @@ def main():
     args.output.mkdir(parents=True)
     for name, data in [('candidate-uncommitted.bin', candidate), ('rollback-erase-pass-uncommitted.bin', erase_pass)]:
         (args.output / name).write_bytes(data)
-    report = dict(schema=1, status='offline only; NOT a supported update package',
+    report = dict(schema=1, status='offline raw candidate; use the exact-build native-host profile for packaging',
                   stock_sha256=o.STOCK_HASH, loader_sha256=o.LOADER_HASH,
                   application_base=hex(o.BASE), candidate_end=hex(o.BASE + len(candidate)),
                   candidate_bytes=len(candidate), erase_end=hex((o.BASE + len(candidate) + 0x1fff) & ~0x1fff),
@@ -47,7 +47,7 @@ def main():
                   metadata_uncommitted='size/CRC only, 0x4428..0x442f',
                   gate_bytes=len(gate), extension_bytes=len(extension), mutable_globals=0,
                   rollback='In DFU: erase-pass image, verify cleared extension, then original qualified restore container; full readback required',
-                  unsupported_by_current_updater=True, usb_access=False)
+                  generic_updater_supported=False, requires_hw23_profile=True, usb_access=False)
     (args.output / 'plan.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 

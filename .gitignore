@@ -4,3 +4,4 @@ __pycache__/
 captures/
 artifacts/
 *.egg-info/
+/native-host/target/

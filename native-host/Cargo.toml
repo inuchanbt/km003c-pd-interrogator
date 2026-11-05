@@ -1,0 +1,21 @@
+[package]
+name = "km003c-overlay-host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+km003c-lib = { path = "../.deps/native-host/km003c-rs/km003c-lib", features = ["hw23-overlay"] }
+km003c-backup = { path = "../.deps/native-host/backup/bootstrap" }
+sha2 = "0.11.1"
+serde_json = "1.0.154"
+crc32fast = "1.5.3"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+
+[patch."https://github.com/okhsunrog/km003c-rs"]
+km003c-lib = { path = "../.deps/native-host/km003c-rs/km003c-lib" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
