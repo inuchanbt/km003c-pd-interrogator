@@ -45,8 +45,12 @@ def main():
     cpu.mem_write(0x1fff8000, ram)
     cpu.mem_write(0x200091e0, heap)
     cpu.mem_map(0x21000000, 0x10000)  # Isolated emulator stack, never device RAM.
+    cpu.mem_map(0x42a70000, 0x1000)  # Read-only GPIO aliases in the callback.
+    cpu.mem_map(0x40049000, 0x1000)  # Native reader's unlock-register writes.
     symbols = load_elf(cpu, (args.build / 'overlay207-offline.elf').read_bytes())
     cpu.mem_write(0x39a18, bytes.fromhex('7047'))  # Only RTOS/display handler stub.
+    cpu.mem_write(0x468c2, bytes.fromhex('00207047'))  # Hardware wake/orientation: awake.
+    cpu.mem_write(0x1fffba0c, b'\0')
     recent, low_sp = [], [0x21010000]
 
     def trace(uc, address, size, user):
@@ -89,8 +93,42 @@ def main():
     initial_free = heap_free()
     input_device = call(0x30ab4, 0)
     original_group = word(input_device + 0x5c)
+    original_reader = word(input_device + 4)
+    if original_reader != 0x24607: raise AssertionError('Expected qualified native keypad')
     call(symbols['kpd207_gui_tick'])
     layer = call(0x2a6fe, 0)
+    reader = word(input_device + 4)
+    if reader == original_reader: raise AssertionError('QR shortcut was not installed')
+    if word(input_device + 0x5c) != original_group: raise AssertionError('Boot stole native keys')
+
+    def buttons(keys=(), now=0):
+        for key, address in ((27, 0x42a7021c), (10, 0x42a7022c), (20, 0x42a70220), (19, 0x42a70224)):
+            cpu.mem_write(address, struct.pack('<I', int(key not in keys)))
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now & 0xffffffff))
+        cpu.mem_write(0x21000000, b'\xa5' * 16)
+        call(reader, input_device, 0x21000000)
+        data = bytes(cpu.mem_read(0x21000000, 16))
+        return struct.unpack_from('<I', data, 4)[0], data[14]
+
+    # Real native GPIO reader, single-key forwarding and a cancelled short chord.
+    for key in (27, 10, 20, 19):
+        buttons()
+        if buttons((key,)) != (key, 1): raise AssertionError('Single-key behavior changed')
+    buttons()
+    if buttons((20, 19), 100)[1] != 0: raise AssertionError('Chord leaked a native press')
+    buttons((20, 19), 849)
+    call(symbols['kpd207_gui_tick'])
+    if word(input_device + 0x5c) != original_group: raise AssertionError('Short chord opened QR')
+    if buttons((20,), 850)[1] != 0: raise AssertionError('Partial release leaked a press')
+    buttons((), 851)
+    # Wrap-safe hold timer: 749 ms does not open; 750 ms does.
+    buttons((20, 19), 0xffffff00)
+    buttons((20, 19), 0xffffff00 + 749)
+    call(symbols['kpd207_gui_tick'])
+    if word(input_device + 0x5c) != original_group: raise AssertionError('Hold opened early')
+    buttons((20, 19), 0xffffff00 + 750)
+    call(symbols['kpd207_gui_tick'])
+    buttons((), 600)
     image = call(0x34cd0, layer, 0)
     source = call(0x30574, image)
     if bytes(cpu.mem_read(image + 0x10, 8)) != struct.pack('<4h', 0, 0, 239, 239):
@@ -123,8 +161,7 @@ def main():
             call(0x2fdf8, decoder)
             decoder_free.append(heap_free()[0])
             rasters.append(raster)
-        cpu.mem_write(0x21000000, struct.pack('<I', key))
-        call(signal, image, 24, 0x21000000)
+        call(0x2f4aa, word(input_device + 0x5c), key)
         call(symbols['kpd207_gui_tick'])
     if frames[0] != frames[2] or frames[1] != frames[3] or frames[0] == frames[1]:
         raise AssertionError('Page navigation or frozen transfer changed')
@@ -136,8 +173,7 @@ def main():
     urls = transfer.encode_pages(demo, transfer.DEFAULT_IMPORT_URL)
     images = [dict(text=url, rgb565=base64.b64encode(raw).decode()) for url, raw in zip(urls, rasters)]
     subprocess.run(['node', str(ROOT / 'tests/check_native.cjs')], input=json.dumps(images), text=True, check=True)
-    cpu.mem_write(0x21000000, struct.pack('<I', 27))
-    call(signal, image, 24, 0x21000000)
+    call(0x2f4aa, word(input_device + 0x5c), 27)
     call(symbols['kpd207_gui_tick'])
     if word(input_device + 0x5c) != original_group:
         raise AssertionError('Exit did not restore native input group')
@@ -145,7 +181,30 @@ def main():
     for _ in range(5): call(symbols['kpd207_gui_tick'])
     if heap_free() != after_close:
         raise AssertionError('Closed screen reallocates or leaks memory')
+    # Failed allocation must leave the native group usable and allow later retry.
+    allocator = bytes(cpu.mem_read(0x32a94, 4))
+    cpu.mem_write(0x32a94, bytes.fromhex('00207047'))
+    cpu.ctl_remove_cache(0x32a94, 0x32a98)
+    buttons((20, 19), 1000)
+    buttons((20, 19), 1750)
+    call(symbols['kpd207_gui_tick'])
+    buttons((), 1751)
+    if word(input_device + 0x5c) != original_group or heap_free() != after_close:
+        raise AssertionError(f'Allocation failure: native group restored={word(input_device + 0x5c)==original_group}; free {heap_free()} vs {after_close}')
+    cpu.mem_write(0x32a94, allocator)
+    cpu.ctl_remove_cache(0x32a94, 0x32a98)
+    for cycle in range(3):
+        buttons((20, 19), 2000 + cycle * 1000)
+        buttons((20, 19), 2750 + cycle * 1000)
+        call(symbols['kpd207_gui_tick'])
+        buttons((), 2751 + cycle * 1000)
+        if word(input_device + 0x5c) == original_group: raise AssertionError('Reopen failed')
+        call(0x2f4aa, word(input_device + 0x5c), 27)
+        call(symbols['kpd207_gui_tick'])
+        if word(input_device + 0x5c) != original_group or heap_free()[0] != after_close[0]:
+            raise AssertionError('Repeated open/close leaked memory or input ownership')
     print('Native LVGL QR open, indexed decoder, page navigation, Exit and idle passed.')
+    print('Native keypad: individual keys, short chord, hold/timer wrap, allocation failure and 3 reopens passed.')
     if args.trace_stack: print(f'Observed stack depth {0x2100fff0-low_sp[0]} bytes.')
     print(f'Native heap free/largest: before {initial_free}, after Exit {after_close}.')
 

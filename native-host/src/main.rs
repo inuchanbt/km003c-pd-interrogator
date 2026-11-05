@@ -52,6 +52,9 @@ enum Command {
     FlashProbe {
         #[arg(long)]
         bundle: PathBuf,
+        /// Audited previous probe whose complete installed bytes may be replaced.
+        #[arg(long)]
+        previous_bundle: Option<PathBuf>,
         #[arg(long)]
         output: PathBuf,
     },
@@ -112,10 +115,15 @@ async fn main() -> Result<()> {
         }
         Command::FlashProbe {
             bundle: path,
+            previous_bundle,
             output,
         } => {
             let b = bundle::audit(&s, &args.stock, &path)?;
-            device::flash(&s, &b, &output).await?;
+            let previous = previous_bundle
+                .as_ref()
+                .map(|path| bundle::audit(&s, &args.stock, path))
+                .transpose()?;
+            device::flash(&s, &b, previous.as_ref(), &output).await?;
         }
         Command::Restore {
             bundle: path,

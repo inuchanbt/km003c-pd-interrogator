@@ -26,8 +26,11 @@
 #define group_add FN(0x2f1c0, void, void *, void *)
 #define indev_next FN(0x30ab4, void *, void *)
 #define indev_set_group FN(0x30c9c, void, void *, void *)
+#define tick_get FN(0x3c0d0, uint32_t, void)
+#define STOCK_KEYPAD_READ 0x24607u
 
 typedef uint8_t (*signal_cb)(void *, uint8_t, void *);
+typedef bool (*keypad_cb)(void *, void *);
 struct image_descriptor { uint32_t header, size; const uint8_t *pixels; };
 struct screen_data {
     struct kpd_transfer transfer;
@@ -41,12 +44,49 @@ struct screen_state {
     void *image, *input, *old_group, *group;
     struct screen_data *data;
     uint8_t page, pending;
+    keypad_cb keypad_read;
+    uint32_t chord_since;
+    bool chord, chord_fired;
 };
 _Static_assert(sizeof(struct image_descriptor) == 12, "ARM32 image descriptor");
 
 static uint8_t anchor_signal(void *obj, uint8_t sign, void *param) {
     struct screen_state *s = obj_ext(obj);
     return s->anchor_signal(obj, sign, param);
+}
+
+static struct screen_state *find_state(void *layer) {
+    for (void *obj = obj_child(layer, NULL); obj; obj = obj_child(layer, obj))
+        if (obj_signal(obj) == anchor_signal) return obj_ext(obj);
+    return NULL;
+}
+
+static bool keypad_read(void *driver, void *data) {
+    struct screen_state *s = find_state(sys_layer(NULL));
+    keypad_cb original = (keypad_cb)(uintptr_t)STOCK_KEYPAD_READ;
+    if (s && s->input == driver) original = s->keypad_read;
+    bool more = original(driver, data);
+    if (!s || s->input != driver) return more;
+    /* The stock reader uses these same GPIOB bit-band aliases, active low.
+     * Hold both arrows for 750 ms; suppress the chord through full release.
+     * No pin configuration, native user_data, or original key mapping changes. */
+    bool left_up = *(volatile const uint32_t *)0x42a70220u != 0;
+    bool right_up = *(volatile const uint32_t *)0x42a70224u != 0;
+    if (!s->data && !left_up && !right_up && !s->chord) {
+        s->chord = true;
+        s->chord_fired = false;
+        s->chord_since = tick_get();
+    }
+    if (s->chord) {
+        if (!left_up && !right_up && !s->chord_fired &&
+            (uint32_t)(tick_get() - s->chord_since) >= 750) {
+            s->pending = 4;
+            s->chord_fired = true;
+        }
+        ((uint8_t *)data)[14] = 0; /* Native lv_indev_data_t.state = released */
+        if (left_up && right_up) s->chord = false;
+    }
+    return more;
 }
 
 static uint8_t image_signal(void *obj, uint8_t sign, void *param) {
@@ -103,6 +143,8 @@ static void close_screen(struct screen_state *s) {
 
 static void open_demo(struct screen_state *s, void *layer) {
     struct kpd_snapshot snapshot = { .id = {'D','E','M','O',0,0,0,1}, .origin = 2 };
+    if (!s->input) return;
+    s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
     s->data = mem_alloc(sizeof(*s->data));
     if (!s->data) return;
     s->page = 1;
@@ -118,13 +160,8 @@ static void open_demo(struct screen_state *s, void *layer) {
     s->image_signal = obj_signal(s->image);
     obj_set_signal(s->image, image_signal);
     group_add(s->group, s->image);
-    for (void *input = indev_next(NULL); input; input = indev_next(input)) {
-        if (*(const uint8_t *)input != 2) continue; /* Native keypad */
-        s->input = input;
-        s->old_group = *(void **)((uint8_t *)input + 0x5c);
-        indev_set_group(input, s->group);
-        return;
-    }
+    indev_set_group(s->input, s->group);
+    return;
 failed:
     close_screen(s);
 }
@@ -132,10 +169,7 @@ failed:
 void kpd207_gui_screen_tick(void) {
     void *layer = sys_layer(NULL);
     if (!layer) return;
-    struct screen_state *s = NULL;
-    for (void *obj = obj_child(layer, NULL); obj; obj = obj_child(layer, obj)) {
-        if (obj_signal(obj) == anchor_signal) { s = obj_ext(obj); break; }
-    }
+    struct screen_state *s = find_state(layer);
     if (!s) {
         void *anchor = obj_create(layer, NULL);
         if (!anchor) return;
@@ -145,10 +179,20 @@ void kpd207_gui_screen_tick(void) {
         s->anchor_signal = obj_signal(anchor);
         obj_hidden(anchor, true);
         obj_set_signal(anchor, anchor_signal);
-        open_demo(s, layer);
-    } else if (s->data && s->pending) {
+        for (void *input = indev_next(NULL); input; input = indev_next(input)) {
+            if (*(const uint8_t *)input != 2) continue;
+            keypad_cb *reader = (keypad_cb *)((uint8_t *)input + 4);
+            if ((uintptr_t)*reader != STOCK_KEYPAD_READ) return;
+            s->input = input;
+            s->keypad_read = *reader;
+            *reader = keypad_read;
+            break;
+        }
+    } else if (s->pending) {
         uint8_t action = s->pending;
         s->pending = 0;
+        if (action == 4 && !s->data) { open_demo(s, layer); return; }
+        if (!s->data) return;
         if (action == 3) { close_screen(s); return; }
         unsigned pages = s->data->transfer.pages;
         s->page = action == 1 ? s->page % pages + 1 : (s->page + pages - 2) % pages + 1;

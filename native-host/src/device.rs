@@ -270,7 +270,11 @@ async fn write_verified(
     Ok(())
 }
 
-pub async fn flash(s: &Stock, b: &Bundle, output: &Path) -> Result<()> {
+fn flash_source_allowed(current: &[u8], original: &[u8], previous: Option<&[u8]>) -> bool {
+    current == original || previous.is_some_and(|expected| current == expected)
+}
+
+pub async fn flash(s: &Stock, b: &Bundle, previous: Option<&Bundle>, output: &Path) -> Result<()> {
     new_evidence(output)?;
     let mut session = open(s, true).await?;
     let before = snapshot(&mut session, s, output, "before").await?;
@@ -285,9 +289,18 @@ pub async fn flash(s: &Stock, b: &Bundle, output: &Path) -> Result<()> {
         return Ok(());
     }
     ensure!(
-        before.internal == s.baseline,
-        "Flash probe requires exact original stock bytes; use explicit restore for recovery"
+        flash_source_allowed(
+            &before.internal,
+            &s.baseline,
+            previous.map(|bundle| bundle.overlay_state.as_slice())
+        ),
+        "Flash probe requires exact stock or explicitly audited previous probe; use restore for recovery"
     );
+    backup::save_json(
+        &output.join("flash-source-verified.json"),
+        &json!({"full_internal_matches":true,
+        "source":if before.internal == s.baseline {"original"} else {"audited-previous-probe"}}),
+    )?;
     write_verified(
         &mut session,
         s,
@@ -473,6 +486,15 @@ async fn observe_gui_callback(session: &mut Session, expected: u32, output: &Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replacing_a_probe_requires_its_explicit_exact_audited_bytes() {
+        assert!(flash_source_allowed(b"stock", b"stock", None));
+        assert!(!flash_source_allowed(b"probe", b"stock", None));
+        assert!(flash_source_allowed(b"probe", b"stock", Some(b"probe")));
+        assert!(!flash_source_allowed(b"probE", b"stock", Some(b"probe")));
+        assert!(!flash_source_allowed(b"prob", b"stock", Some(b"probe")));
+        assert!(!flash_source_allowed(b"other", b"stock", Some(b"probe")));
+    }
     #[test]
     fn recovery_orders_erase_before_original_and_resumes_only_verified_states() {
         assert_eq!(restore_plan(b"stock", b"stock", b"erased"), vec![]);
