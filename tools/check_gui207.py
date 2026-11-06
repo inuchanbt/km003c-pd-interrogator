@@ -366,7 +366,7 @@ def main():
     call(symbols['kpd207_gui_tick']); buttons((), now + 1651)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
     cable_data = word(source + 8)
-    if cpu.mem_read(cable_data + 7208, 1) != b'\0':
+    if cpu.mem_read(source + 42, 1) != b'\0':
         raise AssertionError('Zero Identity qualified a cable result')
     cpu.mem_write(context, b'\x04')
     call(symbols['kpd207_gui_tick'])
@@ -382,21 +382,21 @@ def main():
     call(symbols['kpd207_gui_tick']); buttons((), now + 3251)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
     cable_data = word(source + 8)
-    def cable_urls(data):
-        return [bytes(cpu.mem_read(data + 7212 + 153 * i, 153)).split(b'\0', 1)[0].decode()
+    def compact_urls(data, height=240):
+        return [bytes(cpu.mem_read(data + 12 + height * 30 + 153 * i, 153)).split(b'\0', 1)[0].decode()
                 for i in range(2)]
-    urls = cable_urls(cable_data)
+    urls = compact_urls(cable_data)
     cable = transfer.decode_pages(urls)
     if (cable['origin'] != 'km003c_cable' or cable['measurement_id'] == owned_id
             or cable['fields']['cable_identity']['raw'] != '00000018000000000000000050260800'
             or cable['fields']['spr_pdos']['status'] != 'not_requested'
-            or cpu.mem_read(cable_data + 7208, 1) != b'\x02'):
+            or cpu.mem_read(source + 42, 1) != b'\x02'):
         raise AssertionError('Valid standalone cable response did not produce an independent two-page QR')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     buttons((20, 19), now + 3300); buttons((20, 19), now + 4050)
     call(symbols['kpd207_gui_tick']); buttons((), now + 4051)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    if cable_urls(word(source + 8)) != urls:
+    if compact_urls(word(source + 8)) != urls:
         raise AssertionError('Reopen changed the standalone cable QR')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(0x1fffacd8, struct.pack('<I', old_modal))
@@ -425,7 +425,7 @@ def main():
     call(symbols['kpd207_gui_tick']); buttons((), now + 4951)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
     late_data = word(source + 8)
-    if cpu.mem_read(late_data + 7208, 1) != b'\0':
+    if cpu.mem_read(source + 42, 1) != b'\0':
         raise AssertionError('Opening during the EPR grace period exposed a partial QR')
     cpu.mem_write(context + 0x3d5, b'\x08\x09\x0b')
     cpu.mem_write(context + 0xf0, spr)
@@ -457,6 +457,10 @@ def main():
     if transfer.unpack(bytes(cpu.mem_read(word(source + 8) + 7212, size))) != result:
         raise AssertionError('Late EPR or ID changed after the native scan ended')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    # A live trigger screen had only 6,648 contiguous free bytes on the device.
+    blocker = call(0x32a94, heap_free()[1] - 6648 - 4)
+    if not blocker or not 6200 <= heap_free()[1] <= 6648:
+        raise AssertionError(f'Fixture did not reproduce the trigger heap: {heap_free()}')
     # A settled native PPS contract, with the target and wire RDO copies equal.
     cpu.mem_write(context, b'\0')
     cpu.mem_write(context + 3, b'\x20')
@@ -474,9 +478,26 @@ def main():
     log('94 00', tx=True); log('8c a1 04 00 fe 00 00 02 00 00')
     call(symbols['kpd207_gui_tick'])
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    manual = transfer.decode_pages(cable_urls(word(source + 8)))
+    header, image_bytes, pixels = struct.unpack('<III', cpu.mem_read(source, 12))
+    if header != 7 | (240 << 10) | (192 << 21) or image_bytes != 5768:
+        raise AssertionError('Manual PPS did not use the small image')
+    urls = compact_urls(pixels, 192)
+    manual = transfer.decode_pages(urls)
     if manual['origin'] != 'km003c_pps' or manual['fields']['pps_status']['raw'] != '3CFE0123FE000002':
         raise AssertionError('Manual PPS QR did not include the requested and reported values')
+    frames = []
+    for url in urls:
+        bits = cpu.mem_read(pixels + 8, 192 * 30)
+        raster = bytes(level for byte in bits for shift in range(7, -1, -1)
+                       for level in [0 if byte & (1 << shift) else 255] * 2)
+        raster += bytes([255]) * (48 * 240 * 2)
+        frames.append(dict(text=url, rgb565=base64.b64encode(raster).decode()))
+        call(0x2f4aa, word(input_device + 0x5c), 19); call(symbols['kpd207_gui_tick'])
+    subprocess.run(['node', str(ROOT / 'tests/check_native.cjs')], input=json.dumps(frames), text=True, check=True)
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    if word(input_device + 0x5c) != original_group:
+        raise AssertionError('Manual PPS Exit did not restore the trigger group')
+    call(0x32b80, blocker)
     print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
     print('Standalone e-Marker: rejects zero and out-of-mode result tables; exports a stable independent two-page QR.')
     print('Native mode isolation: a subsequent PD scan rejects stale cache and obtains a fresh ID.')

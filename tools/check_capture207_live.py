@@ -106,7 +106,8 @@ def main():
             report['reference_wire_pdos_match'] = True
         data = word(state + 36)
         if data and data == word(state + 8):  # Current GUI stores the pixels before the payload.
-            data = 0 if read(data + 7209, 1)[0] else data + 7212
+            compact = read(state + 43, 1)[0] or read(data + 7209, 1)[0]
+            data = 0 if compact else data + 7212
         if data and read(data + 2671, 1)[0]:
             length = struct.unpack('<H', read(data + 2668, 2))[0]
             if not 14 <= length <= 2664: raise AssertionError('Invalid frozen transfer length')
