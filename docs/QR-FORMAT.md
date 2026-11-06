@@ -69,7 +69,7 @@ raw_presentは0/1。0のときlengthは0。1かつlength=0は空の生データ�
 | 6 | source_status | Statusのペイロード |
 | 7 | pps_status | PPS Statusのペイロード |
 | 8 | manufacturer | Manufacturer Infoのペイロード |
-| 9 | cable_identity | VDMヘッダーを含むSOP' Identity ACKのVDO列 |
+| 9 | cable_identity | SOP′ Identity ACKのVDO列。通常はVDMヘッダーを含む。KM003C単独ケーブル測定は純正画面のIdHead、CertStat、Product、Cableの4語 |
 | 10 | source_identity | VDMヘッダーを含むSOP Identity ACKのVDO列 |
 
 statusは順に0=not_requested, 1=pass, 2=observed, 3=unsupported,

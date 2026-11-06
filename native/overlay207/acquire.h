@@ -7,14 +7,7 @@ struct kpd207_random {
     uint32_t since, mode;
     uint8_t phase, discarded;
 };
-struct kpd207_cable {
-    uint8_t raw[28], id[8], length;
-    uint16_t ring_total, ring_position;
-    bool ring_ready, active, requested, saved;
-};
 /* Native exact-build adapter. All polling is bounded to one step per GUI tick. */
 void kpd207_acquire_tick(struct kpd207_capture *, struct kpd207_random *, uint32_t now);
 void kpd207_information_tick(struct kpd207_info *, const struct kpd207_capture *, uint32_t now);
-bool kpd207_cable_tick(struct kpd207_cable *, struct kpd207_capture *);
-bool kpd207_cable_freeze(const struct kpd207_cable *, struct kpd_transfer *);
 #endif

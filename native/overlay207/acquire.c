@@ -98,93 +98,30 @@ void kpd207_acquire_tick(struct kpd207_capture *c, struct kpd207_random *r, uint
  * cumulative byte count is uint16_t; our independent physical cursor survives
  * that rollover. A complete record is committed only when count and position
  * agree, and all metadata is rechecked after the bounded copy. */
-static int read_ring(uint16_t *previous_total, uint16_t *previous_position,
-                     bool *ready, uint8_t bytes[320]) {
+static void records(struct kpd207_info *i, uint32_t now) {
     volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
-    if (p[0x3d9] & 1) return 0;
+    if (p[0x3d9] & 1) return;
     uint16_t total = u16(p + 0x780), position = u16(p + 0x77c);
-    if (position >= 320) return 0;
-    if (!*ready) {
-        *previous_total = total; *previous_position = position; *ready = true; return 0;
+    if (position >= 320) return;
+    if (!i->ring_ready) {
+        i->ring_total = total; i->ring_position = position; i->ring_ready = true; return;
     }
-    unsigned delta = (uint16_t)(total - *previous_total);
-    if (!delta) return 0;
+    unsigned delta = (uint16_t)(total - i->ring_total);
+    if (!delta) return;
     if (delta > 320) {
-        *previous_total = total; *previous_position = position; return -1;
+        kpd207_info_stop(i, KPD_INVALID);
+        i->ring_total = total; i->ring_position = position; return;
     }
-    if ((*previous_position + delta) % 320 != position) return 0; /* In-progress writer. */
-    unsigned cursor = *previous_position;
+    if ((i->ring_position + delta) % 320 != position) return; /* In-progress writer. */
+    uint8_t bytes[320];
+    unsigned cursor = i->ring_position;
     for (unsigned n = 0; n < delta; ++n) {
         bytes[n] = p[0x63a + cursor];
         if (++cursor == 320) cursor = 0;
     }
-    if ((p[0x3d9] & 1) || total != u16(p + 0x780) || position != u16(p + 0x77c)) return 0;
-    *previous_total = total; *previous_position = position;
-    return (int)delta;
-}
-
-static void records(struct kpd207_info *i, uint32_t now) {
-    uint8_t bytes[320];
-    int delta = read_ring(&i->ring_total, &i->ring_position, &i->ring_ready, bytes);
-    if (delta < 0 || (delta > 0 && !kpd207_info_records(i, bytes, (unsigned)delta, now)))
-        kpd207_info_stop(i, KPD_INVALID);
-}
-
-__attribute__((noinline))
-bool kpd207_cable_tick(struct kpd207_cable *cable, struct kpd207_capture *capture) {
-    volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
-    /* Mode 5 is entered by the stock USB-C eMarker menu (0x2241c).
-     * Baseline on entry so old PD or emulation records cannot seed a scan. */
-    bool active = p[0] == 5;
-    if (active != cable->active) {
-        cable->active = active;
-        cable->requested = cable->saved = false;
-        cable->ring_ready = false;
-    }
-    if (!active || cable->saved) return false;
-
-    uint8_t bytes[320];
-    int delta = read_ring(&cable->ring_total, &cable->ring_position, &cable->ring_ready, bytes);
-    if (delta < 0 || p[0] != 5) cable->requested = false;
-    if (delta <= 0 || p[0] != 5) return false;
-    const uint8_t *identity = NULL;
-    unsigned length = 0;
-    for (unsigned pos = 0; pos < (unsigned)delta;) {
-        const uint8_t *record = bytes + pos;
-        unsigned len = (record[0] & 63) + 1;
-        if (len > (unsigned)delta - pos || len < 6) {
-            cable->requested = false;
-            return false;
-        }
-        pos += len;
-        if (!(record[0] & 0x80) || len < 12 || record[5] != 1) continue; /* SOP′ */
-        uint16_t header = u16(record + 6);
-        unsigned count = (header >> 12) & 7;
-        if (len != 8 + 4 * count || (header & 0x801f) != 15 || u16(record + 10) != 0xff00)
-            continue;
-        unsigned command = u16(record + 8) & 0x87df;
-        if ((record[0] & 0x40) && count == 1 && command == 0x8001)
-            cable->requested = true;
-        else if (!(record[0] & 0x40) && cable->requested && command == 0x8041 && count >= 5) {
-            unsigned product = (u16(record + 14) >> 11) & 7;
-            if (product != 3 && product != 4) continue; /* Passive or active cable plug. */
-            identity = record + 8;
-            length = count * 4;
-        }
-    }
-    if (!identity || !kpd207_capture_take_id(capture, cable->id)) return false;
-    memcpy(cable->raw, identity, length);
-    cable->length = (uint8_t)length;
-    cable->saved = true;
-    return true;
-}
-
-bool kpd207_cable_freeze(const struct kpd207_cable *cable, struct kpd_transfer *out) {
-    if (!cable->length) return false;
-    struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
-    memcpy(snapshot.id, cable->id, 8);
-    snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){cable->raw, cable->length, KPD_OBSERVED, true};
-    return kpd_freeze(&snapshot, out);
+    if ((p[0x3d9] & 1) || total != u16(p + 0x780) || position != u16(p + 0x77c)) return;
+    i->ring_total = total; i->ring_position = position;
+    if (!kpd207_info_records(i, bytes, delta, now)) kpd207_info_stop(i, KPD_INVALID);
 }
 
 __attribute__((noinline))

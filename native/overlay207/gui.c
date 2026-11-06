@@ -28,6 +28,7 @@
 #define indev_next FN(0x30ab4, void *, void *)
 #define indev_set_group FN(0x30c9c, void, void *, void *)
 #define tick_get FN(0x3c0d0, uint32_t, void)
+#define stock_modal FN(0x33a72, void *, void)
 #define STOCK_KEYPAD_READ 0x24607u
 
 typedef uint8_t (*signal_cb)(void *, uint8_t, void *);
@@ -35,8 +36,13 @@ typedef bool (*keypad_cb)(void *, void *);
 struct image_descriptor { uint32_t header, size; const uint8_t *pixels; };
 struct screen_data {
     struct kpd_transfer transfer;
-    struct kpd_workspace work;
     uint8_t pixels[8 + 240 * 30];
+};
+struct cable_result {
+    void *table;
+    uint32_t vdos[4];
+    uint8_t id[8];
+    bool saved;
 };
 struct screen_state {
     /* Image source is also the callback's route to this state. */
@@ -51,7 +57,7 @@ struct screen_state {
     struct kpd207_capture capture;
     struct kpd207_random random;
     struct kpd207_info info;
-    struct kpd207_cable cable;
+    struct cable_result cable;
     bool prefer_cable;
 };
 _Static_assert(sizeof(struct image_descriptor) == 12, "ARM32 image descriptor");
@@ -129,8 +135,15 @@ static void text(struct screen_data *d, const char *str, unsigned x, unsigned y,
     }
 }
 
+static bool cable_mode(void) {
+    return *(const volatile uint8_t *)0x20000004u == 5;
+}
+
 static bool render(struct screen_state *s) {
     struct screen_data *d = s->data;
+    /* This scratch only lives during rendering. The stock cable result table
+     * leaves less than 10 KiB in one native heap block. */
+    struct kpd_workspace work;
     uint8_t row[480];
     memset(d->pixels, 0, sizeof(d->pixels));
     memset(d->pixels, 255, 4); /* Native 32-bit palette: opaque white, black */
@@ -138,13 +151,13 @@ static bool render(struct screen_state *s) {
     if (!d->transfer.ready) {
         bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
         text(d, reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 42, 80, 4);
-        text(d, reading ? "PLEASE WAIT" : s->cable.active ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
+        text(d, reading ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
         text(d, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
-    if (!kpd_encode_page(&d->transfer, s->page, &d->work)) return false;
+    if (!kpd_encode_page(&d->transfer, s->page, &work)) return false;
     for (unsigned y = 0; y < 240; ++y) {
-        if (!kpd_qr_row(&d->work, y, row)) return false;
+        if (!kpd_qr_row(&work, y, row)) return false;
         for (unsigned x = 0; x < 240; ++x)
             if (row[x * 2] == 0)
                 d->pixels[8 + y * 30 + x / 8] |= (uint8_t)(0x80u >> (x % 8));
@@ -167,10 +180,86 @@ static void close_screen(struct screen_state *s) {
     s->image = s->group = s->data = NULL;
 }
 
+static bool read_vdo(const char *text, uint32_t *out) {
+    if (!text || text[0] != '0' || text[1] != 'x') return false;
+    uint32_t word = 0;
+    for (unsigned i = 2; i < 10; ++i) {
+        unsigned ch = (uint8_t)text[i];
+        unsigned digit;
+        if (ch >= '0' && ch <= '9') digit = ch - '0';
+        else {
+            ch |= 32u;
+            if (ch < 'a' || ch > 'f') return false;
+            digit = ch - 'a' + 10;
+        }
+        word = word << 4 | digit;
+    }
+    if (text[10]) return false;
+    *out = word;
+    return true;
+}
+
+static bool same_text(const char *a, const char *b) {
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a == *b;
+}
+
+static void *cable_table(void) {
+    /* The stock result page owns a complete copy after native PD RAM is cleared.
+     * Identify that exact page by its event callback, then use its table type. */
+    void *modal = stock_modal();
+    if (!modal || (uintptr_t)obj_signal(modal) != 0x3c9f9u) return NULL;
+    void *page = *(void **)obj_ext(modal);
+    if (!page || *(const uint32_t *)((uint8_t *)page + 0x18) != 0x1db7fu) return NULL;
+    void *scroll = ((void **)obj_ext(page))[1];
+    if (!scroll) return NULL;
+    void *table = obj_child(scroll, NULL);
+    return table && (uintptr_t)obj_signal(table) == 0x38f39u ? table : NULL;
+}
+
+static void observe_cable(struct screen_state *s) {
+    void *table = cable_mode() ? cable_table() : NULL;
+    if (table == s->cable.table) return;
+    s->cable.table = table;
+    s->cable.saved = false;
+    if (!table) return;
+    const uint16_t *ext = obj_ext(table);
+    unsigned rows = ext[1];
+    const char *const *cells = *(const char *const *const *)(ext + 2);
+    if (ext[0] != 2 || rows < 4 || rows > 32 || !cells) return;
+    /* Optional rows can move the four Identity words. A cell's first byte
+     * is LVGL formatting, and its remaining bytes are the stock text. */
+    static const char *const labels[] = {"IdHead", "CertStat", "Product", "Cable"};
+    for (unsigned row = 0; row + 4 <= rows; ++row) {
+        uint32_t vdos[4];
+        unsigned n = 0;
+        for (; n < 4; ++n) {
+            const char *label = cells[(row + n) * 2];
+            const char *value = cells[(row + n) * 2 + 1];
+            if (!label || !same_text(label + 1, labels[n]) || !value || !read_vdo(value + 1, &vdos[n]))
+                break;
+        }
+        if (n != 4) continue;
+        unsigned type = (vdos[0] >> 27) & 7;
+        if ((type != 3 && type != 4) || !vdos[3] ||
+            !kpd207_capture_take_id(&s->capture, s->cable.id)) return;
+        memcpy(s->cable.vdos, vdos, sizeof(vdos));
+        s->cable.saved = true;
+        s->prefer_cable = true;
+        return;
+    }
+}
+
 static bool freeze_result(struct screen_state *s) {
-    if (s->cable.active && !s->cable.saved) return false;
+    if (cable_mode() && !s->cable.saved) return false;
     if (s->info.attached && s->info.stage != KPD207_INFO_DONE) return false;
-    if (s->prefer_cable) return kpd207_cable_freeze(&s->cable, &s->data->transfer);
+    if (s->prefer_cable) {
+        struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
+        memcpy(snapshot.id, s->cable.id, 8);
+        snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){
+            (const uint8_t *)s->cable.vdos, sizeof(s->cable.vdos), KPD_OBSERVED, true};
+        return kpd_freeze(&snapshot, &s->data->transfer);
+    }
     return kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer);
 }
 
@@ -228,7 +317,7 @@ void kpd207_gui_screen_tick(void) {
     bool held = s->info.frozen;
     kpd207_information_tick(&s->info, &s->capture, now);
     if (!held && s->info.frozen) s->prefer_cable = false;
-    if (kpd207_cable_tick(&s->cable, &s->capture)) s->prefer_cable = true;
+    observe_cable(s);
     if (s->data && !s->data->transfer.ready && freeze_result(s)) {
         if (render(s)) obj_invalidate(s->image);
         else close_screen(s);

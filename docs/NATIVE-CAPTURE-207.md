@@ -108,11 +108,11 @@ python tools/check_capture207_live.py --snapshot <private-snapshot-dir> --output
 ## 単独のUSB-C eMarker検出
 
 純正メニューでUSB-C eMarkerを開き、ケーブルを検出してから左右を同時に長押しします。
-純正の単独検出モードでDiscover Identityの送信とケーブルからのSOP′応答を観測できた場合、
-本体に `CABLE 01/02` が表示されます。左右で2枚を切り替え、Exitで純正画面に戻れます。
-応答のVDOをそのまま保存し、電源のPDOや電源検出時のe-Markerシミュレーションの記録と区別します。
-単独検出中に応答が確認できない場合は `NO DATA` を表示します。
+純正の単独検出モードで結果表に有効なケーブルIdentityが表示されると、本体に
+`CABLE 01/02` が表示されます。左右で2枚を切り替え、Exitで純正画面に戻れます。
+結果表のIdHead、CertStat、Product、Cableを4つのVDOとしてそのまま保存します。
+結果表が未表示、またはケーブルIdentityが空の場合は `NO DATA` を表示します。
 
 iPhoneの履歴では「ケーブル測定」「電源測定」として、それぞれのIDで開けます。
-本体はケーブルの種類、VID/PIDを含むIdentityのVDOを渡します。
-独立したSVIDやモードの一覧は今回の転送項目に含まれません。
+本体から渡るVDOを使い、ケーブルの種類、VID/PID、生の16進値を表示します。
+純正画面のIC名、SVID、モード一覧は今回の転送範囲外です。

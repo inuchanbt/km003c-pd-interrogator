@@ -307,7 +307,7 @@ class PhoneTests(unittest.TestCase):
                             url_pages=transfer.encode_pages(simulated,base_url=transfer.DEFAULT_IMPORT_URL)))
         cable=model.new_snapshot('km003c_cable','0000000000000008')
         cable['capture_status']='completed'
-        model.set_field(cable,'cable_identity','observed',struct.pack('<5I',0xff00a841,0x1c600000,0,0,0x000a4644))
+        model.set_field(cable,'cable_identity','observed',struct.pack('<4I',0x18000000,0,0,0x00082650))
         vectors.append(dict(snapshot=cable,pages=transfer.encode_pages(cable),
                             url_pages=transfer.encode_pages(cable,base_url=transfer.DEFAULT_IMPORT_URL)))
         actual=model.new_snapshot('km003c','0000000000000006')

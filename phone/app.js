@@ -47,11 +47,14 @@ function render(){
       else if(name==='source_cap_ext')text=`VID ${d.vid} / PID ${d.pid}\nSPR ${d.spr_pdp_w} W${d.epr_pdp_w===null?'':` / EPR ${d.epr_pdp_w} W`}`;
       else if(name==='manufacturer')text=d.name||`名称は空欄 / VID ${d.vid} / PID ${d.pid}`;
       else if(cable){
-        const id=d.vdos[1],product=d.vdos[3];
+        const labels=['IDヘッダー','認証情報','製品情報','ケーブルVDO'];
+        const header=d.vdos.length>=5;
+        if(header)labels.unshift('VDMヘッダー');
+        const id=d.vdos[header?1:0],product=d.vdos[header?3:2];
         const type=(parseInt(id,16)>>>27)&7;
         const summary=type===3?'パッシブケーブル':type===4?'アクティブケーブル':'USB-Cケーブル';
-        const detail=d.vdos.map((vdo,index)=>`${['VDMヘッダー','IDヘッダー','認証情報','製品情報','ケーブルVDO'][index]||'追加VDO'}  0x${vdo}`).join('\n');
-        text=d.vdos.length>=5?`${summary}\nVID ${id.slice(-4)} / PID ${product.slice(0,4)}\n${detail}`:detail;
+        const detail=d.vdos.map((vdo,index)=>`${labels[index]||'追加VDO'}  0x${vdo}`).join('\n');
+        text=d.vdos.length>=4?`${summary}\nVID ${id.slice(-4)} / PID ${product.slice(0,4)}\n${detail}`:detail;
       }
       else text=`${d.vdos.length} VDOを保存`;
       text+=`\n${statuses[field.status]}`;

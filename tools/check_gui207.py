@@ -163,7 +163,7 @@ def main():
     if word(input_device + 0x5c) == original_group:
         raise AssertionError('Native keypad did not enter QR group')
     # No capture: it must be an informational screen, never a demo QR.
-    frozen = pixels - 2672 - 758
+    frozen = pixels - 2672
     if cpu.mem_read(frozen + 2671, 1) != b'\0' or cpu.mem_read(frozen, 4) == b'KPD1':
         raise AssertionError('Empty screen contains an invented QR capture')
     call(0x2f4aa, word(input_device + 0x5c), 27)
@@ -198,8 +198,8 @@ def main():
     image = call(0x34cd0, layer, 0)
     source = call(0x30574, image)
     header, size, pixels = struct.unpack('<III', cpu.mem_read(source, 12))
-    # Descriptor points to the screen_data pixels, after transfer and workspace.
-    frozen = pixels - 2672 - 758
+    # Descriptor points to the screen_data pixels, after the frozen transfer.
+    frozen = pixels - 2672
     binary_length = struct.unpack('<H', cpu.mem_read(frozen + 2668, 2))[0]
     decoded = transfer.unpack(bytes(cpu.mem_read(frozen, binary_length)))
     if decoded['origin'] != 'km003c' or decoded['fields']['spr_pdos']['raw'] != spr.hex().upper() or decoded['fields']['epr_pdos']['raw'] != epr.hex().upper():
@@ -286,7 +286,7 @@ def main():
     buttons((20, 19), 8100); buttons((20, 19), 8850)
     call(symbols['kpd207_gui_tick']); buttons((), 8851)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    pixels = word(source + 8); frozen = pixels - 2672 - 758
+    pixels = word(source + 8); frozen = pixels - 2672
     if cpu.mem_read(frozen + 2671, 1) != b'\0':
         raise AssertionError('In-progress information capture was exported prematurely')
     events = json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text())
@@ -334,7 +334,7 @@ def main():
     buttons((20, 19), now + 100); buttons((20, 19), now + 850)
     call(symbols['kpd207_gui_tick']); buttons((), now + 851)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    reopened = word(source + 8) - 2672 - 758
+    reopened = word(source + 8) - 2672
     if bytes(cpu.mem_read(reopened, binary_length)) != owned_binary:
         raise AssertionError('Information result changed after idle/reopen')
     if transfer.unpack(bytes(cpu.mem_read(reopened, binary_length)))['measurement_id'] != owned_id:
@@ -342,57 +342,85 @@ def main():
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     if word(input_device + 0x5c) != original_group or heap_free()[0] != after_close[0]:
         raise AssertionError('Information screen leaked memory or native input ownership')
-    request, ack = (bytes.fromhex(events[index]['wire_hex']) for index in (0, 1))
-    log(request, 1, True); log(ack, 1)  # Stale records before the native menu starts.
+    # Exact result-page/table ABI observed in the stock e-Marker screen.
+    old_modal = word(0x1fffacd8)
+    modal = call(0x346b8, layer, 0); page = call(0x346b8, modal, 0)
+    scroll = call(0x346b8, page, 0); table = call(0x346b8, scroll, 0)
+    modal_signal, table_signal = word(modal + 0x1c), word(table + 0x1c)
+    cpu.mem_write(call(0x34552, modal, 4), struct.pack('<I', page))
+    cpu.mem_write(call(0x34552, page, 8), struct.pack('<II', 0, scroll))
+    table_ext = call(0x34552, table, 8)
+    cpu.mem_write(modal + 0x1c, struct.pack('<I', 0x3c9f9))
+    cpu.mem_write(table + 0x1c, struct.pack('<I', 0x38f39))
+    cpu.mem_write(page + 0x18, struct.pack('<I', 0x1db7f))
+    cpu.mem_write(0x1fffacd8, struct.pack('<I', modal))
+    cell_vector = 0x21002000
+    cpu.mem_write(table_ext, struct.pack('<HHI', 2, 5, cell_vector))
+    for index, name in enumerate(('VER', 'IdHead', 'CertStat', 'Product', 'Cable')):
+        label = 0x21002100 + index * 48
+        cpu.mem_write(label, b'\x01' + name.encode() + b'\0')
+        cpu.mem_write(label + 24, b'\x010x00000000\0')
+        cpu.mem_write(cell_vector + index * 8, struct.pack('<II', label, label + 24))
     cpu.mem_write(context, b'\x05')
-    call(symbols['kpd207_gui_tick'])
-    log(request, 1)  # A received request cannot qualify an ACK.
-    log(ack, 1)
     buttons((20, 19), now + 900); buttons((20, 19), now + 1650)
     call(symbols['kpd207_gui_tick']); buttons((), now + 1651)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    cable_data = word(source + 8) - 2672 - 758
+    cable_data = word(source + 8) - 2672
     if cpu.mem_read(cable_data + 2671, 1) != b'\0':
-        raise AssertionError('Stale or unpaired cable records qualified a cable result')
-    log(request, 1, True)
-    log(ack[:6] + bytes(len(ack) - 6), 1)
-    log(ack, 0)
+        raise AssertionError('Zero Identity qualified a cable result')
+    cpu.mem_write(context, b'\x04')
     call(symbols['kpd207_gui_tick'])
-    if cpu.mem_read(cable_data + 2671, 1) != b'\0':
-        raise AssertionError('Zero Identity or SOP response qualified a cable result')
-    log(ack, 1)
+    # Set a valid native result after a new scan, with PD cache still empty.
+    cpu.mem_write(0x21002100 + 48 + 24, b'\x010x18000000\0')
+    cpu.mem_write(0x21002100 + 4 * 48 + 24, b'\x010x00082650\0')
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    buttons((20, 19), now + 1700); buttons((20, 19), now + 2450)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 2451)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    if word(source + 8) == 0 or bytes(cpu.mem_read(word(source + 8) - 2672, binary_length)) != owned_binary:
+        raise AssertionError('A stale table in non-cable mode replaced the PD result')
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    cpu.mem_write(context, b'\x05')
+    buttons((20, 19), now + 2500); buttons((20, 19), now + 3250)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 3251)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    cable_data = word(source + 8) - 2672
     call(symbols['kpd207_gui_tick'])
     cable_length = struct.unpack('<H', cpu.mem_read(cable_data + 2668, 2))[0]
     cable_binary = bytes(cpu.mem_read(cable_data, cable_length))
     cable = transfer.unpack(cable_binary)
     if (cable['origin'] != 'km003c_cable' or cable['measurement_id'] == owned_id
-            or cable['fields']['cable_identity']['raw'] != ack[2:].hex().upper()
+            or cable['fields']['cable_identity']['raw'] != '00000018000000000000000050260800'
             or cable['fields']['spr_pdos']['status'] != 'not_requested'
             or cpu.mem_read(cable_data + 2670, 1) != b'\x02'):
         raise AssertionError('Valid standalone cable response did not produce an independent two-page QR')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
-    log(request, 1, True); log(ack, 1)
-    buttons((20, 19), now + 1700); buttons((20, 19), now + 2450)
-    call(symbols['kpd207_gui_tick']); buttons((), now + 2451)
+    buttons((20, 19), now + 3300); buttons((20, 19), now + 4050)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 4051)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    reopened_cable = word(source + 8) - 2672 - 758
+    reopened_cable = word(source + 8) - 2672
     if bytes(cpu.mem_read(reopened_cable, cable_length)) != cable_binary:
-        raise AssertionError('Duplicate response or reopen changed the standalone cable QR')
+        raise AssertionError('Reopen changed the standalone cable QR')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    cpu.mem_write(0x1fffacd8, struct.pack('<I', old_modal))
+    cpu.mem_write(modal + 0x1c, struct.pack('<I', modal_signal))
+    cpu.mem_write(table + 0x1c, struct.pack('<I', table_signal))
+    cpu.mem_write(page + 0x18, bytes(4))
+    call(0x34a0a, modal)
     # A new real PD scan cannot adopt that cable-only cache. It needs a new
     # receive and two stable observations, then obtains a different ID.
     cpu.mem_write(context, b'\0')
     cpu.mem_write(context + 0x29, b'\x24')
-    cpu.mem_write(0x1fffba20, struct.pack('<I', now + 2500)); call(symbols['kpd207_gui_tick'])
+    cpu.mem_write(0x1fffba20, struct.pack('<I', now + 4100)); call(symbols['kpd207_gui_tick'])
     if cpu.mem_read(source + 56 + 179, 1)[0] & 4 or cpu.mem_read(source + 248 + 2278, 1)[0]:
         raise AssertionError('New PD scan adopted a cable-only cache or old completed result')
     cpu.mem_write(context + 0x3d6, b'\x09\x0a')
-    for delta in (2520, 2540):
+    for delta in (4120, 4140):
         cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
     if not cpu.mem_read(source + 56 + 179, 1)[0] & 4 or bytes(cpu.mem_read(source + 56 + 156, 8)) == bytes.fromhex(owned_id):
         raise AssertionError('Repeated native PD scan did not capture a fresh measurement ID')
     print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
-    print('Standalone e-Marker: rejects stale, unpaired, zero and wrong-SOP records; exports a stable independent two-page QR.')
+    print('Standalone e-Marker: rejects zero and out-of-mode result tables; exports a stable independent two-page QR.')
     print('Native mode isolation: a subsequent PD scan rejects stale cache and obtains a fresh ID.')
 
 
