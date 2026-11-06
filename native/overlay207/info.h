@@ -34,7 +34,8 @@ void kpd207_info_tick(struct kpd207_info *, bool ready, bool pps, uint32_t now);
 /* Native console's three-byte prefix (SOP + input PD header), then payload. */
 unsigned kpd207_info_command(const struct kpd207_info *, uint8_t out[7]);
 void kpd207_info_sent(struct kpd207_info *, uint32_t now);
-void kpd207_info_hold(struct kpd207_info *, const struct kpd207_capture *);
+void kpd207_info_hold(struct kpd207_info *, const struct kpd207_capture *, uint32_t now);
+bool kpd207_info_waiting_epr(const struct kpd207_info *, const struct kpd207_capture *, uint32_t now);
 bool kpd207_info_records(struct kpd207_info *, const uint8_t *, unsigned, uint32_t now);
 bool kpd207_info_freeze(const struct kpd207_capture *, const struct kpd207_info *, struct kpd_transfer *);
 #endif

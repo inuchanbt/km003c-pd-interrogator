@@ -416,9 +416,41 @@ def main():
         cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
     if not cpu.mem_read(source + 56 + 179, 1)[0] & 4 or bytes(cpu.mem_read(source + 56 + 156, 8)) == bytes.fromhex(owned_id):
         raise AssertionError('Repeated native PD scan did not capture a fresh measurement ID')
+    # Match the slow source: SPR is stable when a native reset ends the extra
+    # requests. EPR becomes stable later in the same stock scan.
+    log('8d 01')
+    call(symbols['kpd207_gui_tick'])
+    if bytes(cpu.mem_read(source + 248 + 2152, 1)) != b'\x06':
+        raise AssertionError('Fixture did not stop information acquisition before EPR')
+    buttons((20, 19), now + 4200); buttons((20, 19), now + 4950)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 4951)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    late_data = word(source + 8)
+    if cpu.mem_read(late_data + 7208, 1) != b'\0':
+        raise AssertionError('Opening during the EPR grace period exposed a partial QR')
+    cpu.mem_write(context + 0x3d5, b'\x08\x09\x0b')
+    cpu.mem_write(context + 0xf0, spr)
+    cpu.mem_write(context + 0xa8, epr)
+    for delta in (6000, 6020):
+        cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta))
+        call(symbols['kpd207_gui_tick'])
+    frozen = late_data + 7212
+    size = struct.unpack('<H', cpu.mem_read(frozen + 2668, 2))[0]
+    result = transfer.unpack(bytes(cpu.mem_read(frozen, size)))
+    if result['fields']['epr_pdos'].get('raw') != epr.hex().upper():
+        raise AssertionError('Late EPR did not reach the held result and open QR')
+    cpu.mem_write(context, b'\x04')
+    cpu.mem_write(context + 0x29, b'\0')
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    buttons((20, 19), now + 6050); buttons((20, 19), now + 6800)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 6801)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    if transfer.unpack(bytes(cpu.mem_read(word(source + 8) + 7212, size))) != result:
+        raise AssertionError('Late EPR or ID changed after the native scan ended')
     print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
     print('Standalone e-Marker: rejects zero and out-of-mode result tables; exports a stable independent two-page QR.')
     print('Native mode isolation: a subsequent PD scan rejects stale cache and obtains a fresh ID.')
+    print('Delayed EPR: wait on open, promote late capabilities, and preserve the complete QR after native scan exit.')
 
 
 if __name__ == '__main__':

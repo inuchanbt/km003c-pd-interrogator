@@ -61,13 +61,15 @@ class InfoTests(unittest.TestCase):
             'kpd207_info_tick': [C.POINTER(Info), C.c_bool, C.c_bool, C.c_uint32],
             'kpd207_info_command': [C.POINTER(Info), C.POINTER(U8)],
             'kpd207_info_sent': [C.POINTER(Info), C.c_uint32],
-            'kpd207_info_hold': [C.POINTER(Info), C.POINTER(CacheCapture)],
+            'kpd207_info_hold': [C.POINTER(Info), C.POINTER(CacheCapture), C.c_uint32],
+            'kpd207_info_waiting_epr': [C.POINTER(Info), C.POINTER(CacheCapture), C.c_uint32],
             'kpd207_info_records': [C.POINTER(Info), C.POINTER(U8), C.c_uint, C.c_uint32],
             'kpd207_info_freeze': [C.POINTER(CacheCapture), C.POINTER(Info), C.POINTER(Transfer)],
         }.items():
             getattr(cls.dll, name).argtypes = types
         cls.dll.kpd207_info_records.restype = C.c_bool
         cls.dll.kpd207_info_freeze.restype = C.c_bool
+        cls.dll.kpd207_info_waiting_epr.restype = C.c_bool
         cls.events = json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text())
 
     @classmethod
@@ -248,15 +250,50 @@ class InfoTests(unittest.TestCase):
         c = CacheCapture(flags=4); c.result = cache_sample(epr=bytes(range(44)))
         c.id[:] = bytes.fromhex('0102030405060708')
         self.info.stage = 6; self.info.capture_status = 1
-        self.dll.kpd207_info_hold(C.byref(self.info), C.byref(c))
+        self.dll.kpd207_info_hold(C.byref(self.info), C.byref(c), 0)
         first, second = Transfer(), Transfer()
         self.assertTrue(self.dll.kpd207_info_freeze(C.byref(c), C.byref(self.info), C.byref(first)))
         c.result = cache_sample(sequence=2); c.id[7] += 1
-        self.dll.kpd207_info_hold(C.byref(self.info), C.byref(c))
+        self.dll.kpd207_info_hold(C.byref(self.info), C.byref(c), 20)
         self.assertTrue(self.dll.kpd207_info_freeze(C.byref(c), C.byref(self.info), C.byref(second)))
         self.assertEqual(bytes(first.binary[:first.length]), bytes(second.binary[:second.length]))
         self.dll.kpd207_info_begin(C.byref(self.info))
         self.assertFalse(self.info.frozen)
+
+    def test_late_epr_promotes_only_matching_active_scan_and_keeps_export_immutable(self):
+        capture = CacheCapture(flags=4, previous_phase=0x24)
+        capture.result = cache_sample()
+        capture.id[7] = 1
+        self.info.stage = 6
+        info, current = C.byref(self.info), C.byref(capture)
+        self.dll.kpd207_info_hold(info, current, 100)
+        self.assertTrue(self.dll.kpd207_info_waiting_epr(info, current, 6099))
+        self.assertFalse(self.dll.kpd207_info_waiting_epr(info, current, 6100))
+        spr_only = Transfer()
+        self.assertTrue(self.dll.kpd207_info_freeze(current, info, C.byref(spr_only)))
+        early = transfer.unpack(bytes(spr_only.binary[:spr_only.length]))
+        self.assertEqual(early['fields']['epr_pdos'], {'status': 'partial'})
+
+        epr = bytes(range(44))
+        capture.id[7] = 2
+        capture.result = cache_sample(sequence=2, spr=bytes.fromhex('2D91910A'), epr=epr)
+        self.dll.kpd207_info_hold(info, current, 6200)
+        self.assertEqual(self.info.pdos.epr_length, 0)
+        capture.result = cache_sample(sequence=3, epr=epr)
+        capture.previous_phase = 0
+        self.dll.kpd207_info_hold(info, current, 6220)
+        self.assertEqual(self.info.pdos.epr_length, 0)
+        self.assertFalse(self.dll.kpd207_info_waiting_epr(info, current, 120))
+
+        capture.previous_phase = 0x24
+        self.dll.kpd207_info_hold(info, current, 6240)
+        self.assertFalse(self.dll.kpd207_info_waiting_epr(info, current, 6240))
+        full = Transfer()
+        self.assertTrue(self.dll.kpd207_info_freeze(current, info, C.byref(full)))
+        late = transfer.unpack(bytes(full.binary[:full.length]))
+        self.assertNotEqual(late['measurement_id'], early['measurement_id'])
+        self.assertEqual(late['fields']['epr_pdos']['raw'], epr.hex().upper())
+        self.assertEqual(transfer.unpack(bytes(spr_only.binary[:spr_only.length])), early)
 
     def test_native_emarker_setting_is_preserved_without_changing_identity_bytes(self):
         for mode in (0, 1, 2):

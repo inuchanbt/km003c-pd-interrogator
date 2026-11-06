@@ -142,7 +142,7 @@ static bool cable_mode(void) {
     return *(const volatile uint8_t *)0x20000004u == 5;
 }
 
-static bool render(struct screen_state *s) {
+static bool render(struct screen_state *s, uint32_t now) {
     struct screen_data *d = s->data;
     struct kpd_workspace work;
     uint8_t row[480];
@@ -151,8 +151,9 @@ static bool render(struct screen_state *s) {
     d->pixels[7] = 255;
     if (!d->pages) {
         bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
-        text(d, reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 42, 80, 4);
-        text(d, reading ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
+        bool epr = !d->cable && kpd207_info_waiting_epr(&s->info, &s->capture, now);
+        text(d, epr ? "READING EPR" : reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 32, 80, 4);
+        text(d, reading || epr ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
         text(d, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
@@ -271,19 +272,20 @@ static bool freeze_cable(struct screen_state *s) {
     return true;
 }
 
-static bool freeze_result(struct screen_state *s) {
+static bool freeze_result(struct screen_state *s, uint32_t now) {
     if (s->info.attached && s->info.stage != KPD207_INFO_DONE) return false;
     if (s->data->cable) {
         if (!s->prefer_cable || (cable_mode() && !s->cable.saved)) return false;
         return freeze_cable(s);
     }
+    if (kpd207_info_waiting_epr(&s->info, &s->capture, now)) return false;
     struct kpd_transfer *transfer = &((struct power_screen *)s->data)->transfer;
     if (!kpd207_info_freeze(&s->capture, &s->info, transfer)) return false;
     s->data->pages = transfer->pages;
     return true;
 }
 
-static void open_result(struct screen_state *s, void *layer) {
+static void open_result(struct screen_state *s, void *layer, uint32_t now) {
     if (!s->input) return;
     s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
     bool cable = cable_mode() || (s->prefer_cable && !s->info.attached);
@@ -293,8 +295,8 @@ static void open_result(struct screen_state *s, void *layer) {
     s->data->pages = 0;
     s->data->cable = cable;
     if (!cable) memset(&((struct power_screen *)s->data)->transfer, 0, sizeof(struct kpd_transfer));
-    (void)freeze_result(s);
-    if (!render(s)) goto failed;
+    (void)freeze_result(s, now);
+    if (!render(s, now)) goto failed;
     s->descriptor.header = 7u | (240u << 10) | (240u << 21); /* INDEXED_1BIT */
     s->descriptor.size = sizeof(s->data->pixels);
     s->descriptor.pixels = s->data->pixels;
@@ -341,20 +343,20 @@ void kpd207_gui_screen_tick(void) {
     kpd207_information_tick(&s->info, &s->capture, now);
     if (!held && s->info.frozen) s->prefer_cable = false;
     observe_cable(s);
-    if (s->data && !s->data->pages && freeze_result(s)) {
-        if (render(s)) obj_invalidate(s->image);
+    if (s->data && !s->data->pages && freeze_result(s, now)) {
+        if (render(s, now)) obj_invalidate(s->image);
         else close_screen(s);
     }
     if (s->pending) {
         uint8_t action = s->pending;
         s->pending = 0;
-        if (action == 4 && !s->data) { open_result(s, layer); return; }
+        if (action == 4 && !s->data) { open_result(s, layer, now); return; }
         if (!s->data) return;
         if (action == 3) { close_screen(s); return; }
         if (!s->data->pages) return;
         unsigned pages = s->data->pages;
         s->page = action == 1 ? s->page % pages + 1 : (s->page + pages - 2) % pages + 1;
-        if (render(s)) obj_invalidate(s->image);
+        if (render(s, now)) obj_invalidate(s->image);
         else close_screen(s);
     }
 }

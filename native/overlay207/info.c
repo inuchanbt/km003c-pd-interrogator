@@ -201,9 +201,32 @@ bool kpd207_info_records(struct kpd207_info *i, const uint8_t *b, unsigned n, ui
     return true;
 }
 
-void kpd207_info_hold(struct kpd207_info *i, const struct kpd207_capture *c) {
-    if (i->frozen || i->stage != KPD207_INFO_DONE || !(c->flags & KPD207_CAPTURE_READY)) return;
-    i->pdos = c->result; memcpy(i->id, c->id, 8); i->frozen = true;
+static bool missing_epr(const struct kpd207_sample *p) {
+    if (p->epr_length || p->spr_length < 4) return false;
+    /* The first fixed 5 V Source PDO advertises EPR Mode Capable at bit 23. */
+    uint32_t first = u16(p->spr) | (uint32_t)u16(p->spr + 2) << 16;
+    return first >> 30 == 0 && ((first >> 10) & 1023) == 100 && (first & (1u << 23));
+}
+
+void kpd207_info_hold(struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {
+    if (i->stage != KPD207_INFO_DONE || !(c->flags & KPD207_CAPTURE_READY)) return;
+    if (i->frozen) {
+        /* The native scan can reach EPR after the extra requests have stopped.
+         * Promote only an active scan's stable EPR copy with the same SPR PDOs.
+         * Keep the full copy when the native scan later returns to SPR. */
+        if (i->pdos.epr_length || !c->result.epr_length || c->previous_phase != 0x24 ||
+            i->pdos.spr_length != c->result.spr_length ||
+            memcmp(i->pdos.spr, c->result.spr, i->pdos.spr_length)) return;
+    }
+    i->pdos = c->result;
+    memcpy(i->id, c->id, 8);
+    i->frozen = true;
+    i->since = now; /* In DONE, since is the start of the QR's EPR grace period. */
+}
+
+bool kpd207_info_waiting_epr(const struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {
+    return i->frozen && c->previous_phase && missing_epr(&i->pdos) &&
+        (uint32_t)(now - i->since) < 6000;
 }
 
 bool kpd207_info_freeze(const struct kpd207_capture *c, const struct kpd207_info *i, struct kpd_transfer *out) {
@@ -214,6 +237,8 @@ bool kpd207_info_freeze(const struct kpd207_capture *c, const struct kpd207_info
     snapshot.fields[KPD_SPR_PDOS] = (struct kpd_field){p->spr, p->spr_length, KPD_OBSERVED, true};
     if (p->epr_length)
         snapshot.fields[KPD_EPR_PDOS] = (struct kpd_field){p->epr, p->epr_length, KPD_OBSERVED, true};
+    else if (missing_epr(p))
+        snapshot.fields[KPD_EPR_PDOS].status = KPD_PARTIAL;
     for (unsigned n = 2; n < KPD_FIELDS; ++n) {
         const struct kpd207_info_field *f = &i->fields[n - 2];
         snapshot.fields[n] = (struct kpd_field){f->raw, f->length, f->status, f->present != 0};
