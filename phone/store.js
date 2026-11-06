@@ -34,9 +34,9 @@
     }
     add(texts){
       const pages=texts.filter(text=>text.trim()).map(text=>KPD.parsePage(text));
-      if(!pages.length)throw Error('QRを読み込むか、QRテキストを入力してください');
+      if(!pages.length)throw KPD.localizedError("Scan a QR code or enter QR text.",'QRを読み込むか、QRテキストを入力してください');
       const key=pages[0].key;
-      if(pages.some(page=>page.key!==key))throw Error('別の測定のQRは1つずつ取り込んでください');
+      if(pages.some(page=>page.key!==key))throw KPD.localizedError("Import one measurement at a time.",'別の測定のQRは1つずつ取り込んでください');
       const latest=this.read(),previous=latest.transfers[key]||this.state.transfers[key];
       const combined=[...(previous?.pages||[]),...pages.map(page=>page.text)];
       const result=KPD.assemble(combined); // Validate conflicts and CRC before persisting.
@@ -47,7 +47,7 @@
       this.write();return result;
     }
     current(){const record=this.state.transfers[this.state.active];return record?KPD.assemble(record.pages):{received:0,total:0,snapshot:null};}
-    select(key){if(!Object.hasOwn(this.state.transfers,key))throw Error('保存済みの測定が見つかりません');this.state.active=key;this.write();return this.current();}
+    select(key){if(!Object.hasOwn(this.state.transfers,key))throw KPD.localizedError("The saved measurement could not be found.",'保存済みの測定が見つかりません');this.state.active=key;this.write();return this.current();}
     list(){
       return Object.entries(this.state.transfers).sort((a,b)=>b[1].updatedAt-a[1].updatedAt).map(([key,entry])=>{
         const page=KPD.parsePage(entry.pages[0]),result=KPD.assemble(entry.pages);

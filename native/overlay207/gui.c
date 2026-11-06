@@ -40,6 +40,7 @@ typedef char page_url[KPD_URL_MAX + 1];
 struct cable_result {
     void *table;
     uint32_t vdos[4];
+    uint32_t svids;
     uint8_t id[8];
     bool saved;
 };
@@ -279,10 +280,9 @@ static void close_screen(struct screen_state *s) {
     s->data = NULL;
 }
 
-static bool read_vdo(const char *text, uint32_t *out) {
-    if (!text || text[0] != '0' || text[1] != 'x') return false;
+static bool read_hex(const char *text, unsigned digits, uint32_t *out) {
     uint32_t word = 0;
-    for (unsigned i = 2; i < 10; ++i) {
+    for (unsigned i = 0; i < digits; ++i) {
         unsigned ch = (uint8_t)text[i];
         unsigned digit;
         if (ch >= '0' && ch <= '9') digit = ch - '0';
@@ -293,14 +293,30 @@ static bool read_vdo(const char *text, uint32_t *out) {
         }
         word = word << 4 | digit;
     }
-    if (text[10]) return false;
     *out = word;
     return true;
+}
+
+static bool read_vdo(const char *text, uint32_t *out) {
+    return text && text[0] == '0' && text[1] == 'x' && read_hex(text + 2, 8, out) && !text[10];
 }
 
 static bool same_text(const char *a, const char *b) {
     while (*a && *a == *b) { ++a; ++b; }
     return *a == *b;
+}
+
+static uint32_t read_svids(const char *const *cells, unsigned rows) {
+    for (unsigned row = 0; row < rows; ++row) {
+        const char *label = cells[row * 2], *value = cells[row * 2 + 1];
+        if (!label || !same_text(label + 1, "SVID") || !value) continue;
+        ++value; /* Skip LVGL cell formatting. Stock text is "0x1234 abcd". */
+        uint32_t first, second;
+        if (value[0] == '0' && value[1] == 'x' && read_hex(value + 2, 4, &first) &&
+            value[6] == ' ' && read_hex(value + 7, 4, &second) && !value[11])
+            return first << 16 | second;
+    }
+    return 0;
 }
 
 static void *cable_table(void) {
@@ -318,7 +334,7 @@ static void *cable_table(void) {
 
 static void observe_cable(struct screen_state *s) {
     void *table = cable_mode() ? cable_table() : NULL;
-    if (table == s->cable.table) return;
+    if (table == s->cable.table && (!table || s->cable.saved)) return;
     s->cable.table = table;
     s->cable.saved = false;
     if (!table) return;
@@ -340,9 +356,16 @@ static void observe_cable(struct screen_state *s) {
         }
         if (n != 4) continue;
         unsigned type = (vdos[0] >> 27) & 7;
-        if ((type != 3 && type != 4) || !vdos[3] ||
-            !kpd207_capture_take_id(&s->capture, s->cable.id)) return;
+        uint32_t svids = 0;
+        if ((type != 3 && type != 4) || !vdos[3]) {
+            /* Some cable scans retain SVIDs but leave all four Identity cells empty. */
+            if (vdos[0] || vdos[1] || vdos[2] || vdos[3]) return;
+            svids = read_svids(cells, rows);
+            if (!svids) return;
+        }
+        if (!kpd207_capture_take_id(&s->capture, s->cable.id)) return;
         memcpy(s->cable.vdos, vdos, sizeof(vdos));
+        s->cable.svids = svids;
         s->cable.saved = true;
         s->prefer_cable = true;
         return;
@@ -358,9 +381,13 @@ static bool freeze_compact(struct screen_state *s) {
         if (!kpd207_pps_freeze(&s->info.manual_pps, &transfer)) return false;
     } else {
         struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
+        uint32_t words[5];
+        memcpy(words, s->cable.vdos, sizeof(s->cable.vdos));
+        words[4] = s->cable.svids;
         memcpy(snapshot.id, s->cable.id, 8);
         snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){
-            (const uint8_t *)s->cable.vdos, sizeof(s->cable.vdos), KPD_OBSERVED, true};
+            (const uint8_t *)words, words[4] ? sizeof(words) : sizeof(s->cable.vdos),
+            words[4] ? KPD_PARTIAL : KPD_OBSERVED, true};
         if (!kpd_freeze(&snapshot, &transfer)) return false;
     }
     if (transfer.pages != 2 ||

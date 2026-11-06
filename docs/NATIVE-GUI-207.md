@@ -1,80 +1,9 @@
-# 純正2.0.7上のQR画面
+# Native QR screen on stock 2.0.7
 
-以下はDEMO版とPDO観測版の画面・入力処理の記録です。
-現在の追加GETと完了結果の保持は [NATIVE-INFO-207.md](NATIVE-INFO-207.md) を参照してください。
+English · [日本語](NATIVE-GUI-207.ja.md)
 
-既知ハッシュのHW2.3／純正2.0.7専用です。初版のDEMOに続き、本体のPDO保持結果との接続を追加しました。
-追加GET要求とフラッシュへの測定保存は行いません。
-対象実機のDEMO版で2枚のQR表示、iPhone標準カメラからの2/2枚取込、Exit復帰を利用者が確認しました。
-続く実測PDO版でも、本体QRからiPhoneへ3/3枚を取り込み、SPR/EPRの表示を利用者が確認しました。
-実測PDOの固定処理は [NATIVE-CAPTURE-207.md](NATIVE-CAPTURE-207.md) を参照してください。
+Hold Left and Right for about one second to open the current measurement. Left and Right cycle through its pages. Exit closes the QR screen and restores stock input. The same completed result can be reopened while it remains in RAM. Pending acquisition and no-data cases have separate screens.
 
-## 操作と表示
+The overlay uses the stock LVGL image object, allocator, and input group. QR workspace and image data use stock heap allocations and are released on close. The GUI task continues to run the stock handler. Keeping the stock input group active outside the overlay lets the normal keys behave as before. The compact PPS image fits alongside the stock PPS adjustment screen.
 
-- 起動時は純正画面です。左右ボタンを同時に約1秒長押しすると240×240のQRを開きます。
-- ページを左右で循環、OKも次ページです。今回のSPR/EPR PDOでは3ページです。
-- Exitで画像を閉じ、元の純正入力グループへ戻します。同じ長押しで何度でも開き直せます。
-- 下端の小さな文字は `SAVED 1/3` などです。16ピクセルのquiet zone外に置きます。
-- URLの読込先は既存のスマホ取込画面です。originはKM003C、PDOはobserved、他の項目は未要求です。
-- 結果がなければ `NO DATA` で、QRを作りません。測定IDの準備失敗時は `ID ERROR` です。
-
-## 純正GUIとの接続
-
-`native/overlay207/gui.c` は通常のGUIタスクから純正handlerを毎回呼んだ後に実行します。
-システムレイヤーに非表示の管理オブジェクトを1個置き、純正の拡張属性に状態を保持します。
-管理オブジェクトは専用signal callbackで見つけます。他のオブジェクトやシステムレイヤーの
-属性・コールバック、任意のRAMアドレスを上書きしません。
-
-QRは純正ヒープ上のINDEXED_1BIT画像です。240×240のビット列7200バイト＋RGBAパレット8バイト。
-転送データ・QR生成用領域と合わせた大きな確保は10,640バイトです。
-画面オブジェクトや入力グループなども純正の確保処理を使います。
-Exit後も約352バイトの管理状態と保持結果を残し、長押しによる再表示を待ちます。
-メモリ確保に失敗した場合は、画像・グループ・作業領域を片付けて純正操作を継続します。
-
-ボタンは純正の入力デバイスを一時的に専用グループへ割り当てます。
-画像のsignal callbackではページ変更／終了を予約し、純正handlerから戻った後に適用します。
-これにより入力イベントの実行途中で画像を削除しません。
-
-純正キー読取コールバック `0x24607` を保存し、同じ入力デバイスの読取口だけをラップします。
-毎回、元の読取処理を先に呼びます。左右ボタンのGPIOB bit-band入力は読取りのみです。
-両方を750 ms保持すると開く要求を予約し、完全に離すまでキー状態をreleasedにします。
-短い同時押しは開かず、片方だけの操作と元の読取結果は通常どおり通します。
-元のuser_dataやGPIO設定は書き換えません。想定した純正読取口と違う場合は導入しません。
-
-主な確認済みの純正関数（呼出し時はThumb bitを付与）:
-
-| 処理 | アドレス |
-| --- | --- |
-| 確保／解放 | `0x32a94` / `0x32b80` |
-| system layer | `0x2a6fe` |
-| object作成／削除／拡張属性 | `0x346b8` / `0x34a0a` / `0x34552` |
-| image作成／source設定 | `0x2f728` / `0x3057e` |
-| group作成／削除／追加 | `0x2f218` / `0x2f250` / `0x2f1c0` |
-| 入力デバイス列挙／group設定 | `0x30ab4` / `0x30c9c` |
-| image decoder open／read line／close | `0x2fe94` / `0x2ff72` / `0x2fdf8` |
-
-構造と動作を理解する参考として [LVGL v7.11.0公式ソース](https://github.com/lvgl/lvgl/tree/v7.11.0/src)
-を参照しました。純正のバージョンが同じと断定したものではなく、上記の位置とABIは
-対象バイナリとARM実行で照合しています。純正バイナリは同梱しません。
-
-## オフラインで検証した範囲
-
-通常の56テスト、28ケースのgate検証、5枚の実測由来QRのARM検証に加え、
-所有者の純正ROMと読み取り専用で保存したGUIメモリを使います。
-
-```powershell
-python tools/check_gui207.py --stock <private-stock-app.bin> --snapshot <private-snapshot-dir> --output artifacts/gui-check
-```
-
-実際の純正の確保・解放、オブジェクト、画像、入力グループ、画像デコーダーを実行します。
-PDO実データ3枚について、純正デコーダーの出力全240行をjsQRに渡してURL一致を確認します。
-ページ送り／戻し／循環、Exit後のグループ復帰、閉じた後の5tickで追加確保がないこと、
-各ページのデコード後に空きメモリが減り続けないことも確認します。
-純正GPIO読取も実行し、個別キー、短い同時押し、750 msの境界、32bitタイマーの周回、
-作業領域の確保失敗後の再試行、3回の開閉でのメモリ・入力所有権復帰を確認します。
-`--trace-stack` でbasic blockごとのSPも観測できます。
-
-検証用RAMは実行中の非原子的な読出しで、あらゆるGUI状態を代表するものではありません。
-純正handlerはスタブに置換し、RTOS、割り込み、液晶バス、PDの並行動作は再現していません。
-GPIO入力・起床判定も模擬しています。実機でも長押し→Exit→再表示を利用者が確認しました。
-実機表示・スマホ読取の確認とは区別します。
+Offline validation runs the ARM overlay against private stock ROM and RAM, checks button handling and allocation behavior, and decodes the rendered QR through jsQR. Hardware records are separate from the emulator results. See [overlay placement](OVERLAY-207.md), [capture behavior](NATIVE-CAPTURE-207.md), and [hardware verification](HARDWARE-2026-11-05.md).

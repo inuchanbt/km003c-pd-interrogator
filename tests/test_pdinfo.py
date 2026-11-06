@@ -16,6 +16,22 @@ from pdinfo.events import Collector, event_from_words
 from pdinfo.live import PROBES
 
 ROOT = Path(__file__).resolve().parents[1]
+FIXTURES = ROOT/'tests/fixtures'
+
+# Captured on the KM003C. The eighth Status byte came from the on-device record.
+MEASURED_STATUS = bytes.fromhex('0006000000000000')
+MEASURED_SOURCE_ID = struct.pack('<5I', 0xFF00A841, 0x01C032AC, 0, 0x00220000, 0x40000000)
+MEASURED_CABLE = struct.pack('<4I', 0x1C6020C2, 0, 0x0A140310, 0x460A2643)
+MEASURED_SCEDB = bytes.fromhex('AC3222000000000000000000000000000000000000030064F0')
+MEASURED_SIDO = bytes.fromhex('01F0F080')
+
+# Synthetic values for the named layouts and reserved/length cases.
+SYNTHETIC_STATUS = bytes.fromhex('3518919F872A1A55')
+SYNTHETIC_DRD_ID = struct.pack('<7I', 0xFF00A841, 0xD5601234, 0x11223344, 0xABCD0310,
+                               0x6900000B, 0, 0x45000004)
+SYNTHETIC_PDOS = struct.pack('<5I', 0x3FF00000 | (100 << 10) | 300,
+    0x02000000 | (180 << 10) | 300, 0x40000000 | (240 << 20) | (100 << 10) | 181,
+    0x80000000 | (400 << 20) | (320 << 10) | 250, 0)
 
 
 def setUpModule():
@@ -46,6 +62,114 @@ def extended(kind, data, number=0, total=None, chunked=True):
 
 
 class ModelTests(unittest.TestCase):
+    def test_measured_source_status(self):
+        d = model.decode('source_status', MEASURED_STATUS)
+        self.assertEqual(d['present_input'], dict(external=True, external_type='ac',
+            internal_battery=False, internal_non_battery=False, reserved=0))
+        self.assertEqual(d['internal_temperature_code'], 0)
+        self.assertIsNone(d['internal_temperature_c'])
+        self.assertIsNone(d['present_battery_input']['active'])
+        self.assertFalse(any(d['events'].values()))
+        self.assertEqual(d['temperature_status']['code'], 0)
+        self.assertFalse(any(d['power_status'].values()))
+        self.assertEqual(d['power_state_change'], dict(state_code=0, indicator_code=0, reserved=0))
+        self.assertEqual(d['trailing_hex'], '00')
+
+    def test_status_length_flags_and_reserved_bytes(self):
+        self.assertIsNone(model.decode('source_status', b'\x00' * 5))
+        legacy = model.decode('source_status', bytes.fromhex('0102A0000000'))
+        self.assertEqual(legacy['internal_temperature_code'], 1)
+        self.assertIsNone(legacy['internal_temperature_c'])
+        self.assertEqual(legacy['present_input']['external_type'], 'dc')
+        self.assertEqual(legacy['present_battery_input']['reserved'], 0xA0)
+        self.assertNotIn('power_state_change', legacy)
+        self.assertNotIn('trailing_hex', legacy)
+        d = model.decode('source_status', SYNTHETIC_STATUS)
+        self.assertEqual(d['internal_temperature_c'], 53)
+        self.assertEqual(d['present_battery_input']['active'], [0, 4, 7])
+        self.assertEqual(d['events'], dict(ocp=True, otp=True, ovp=True, pps_current_limit=True, reserved=0x81))
+        self.assertEqual(d['temperature_status'], dict(code=3, reserved=0x81))
+        self.assertEqual(d['power_status'], dict(cable=True, other_ports=False, external_power=True,
+            events=False, temperature=True, reserved=0))
+        self.assertEqual(d['power_state_change'], dict(state_code=2, indicator_code=3, reserved=0))
+        self.assertEqual(d['trailing_hex'], '55')
+
+    def test_measured_source_identity(self):
+        d = model.decode('source_identity', MEASURED_SOURCE_ID)
+        self.assertEqual(d['vdos'], ['FF00A841', '01C032AC', '00000000', '00220000', '40000000'])
+        identity = d['identity']
+        self.assertEqual((identity['vid'], identity['pid'], identity['xid'], identity['bcd_device']),
+                         ('32AC', '0022', '00000000', '0000'))
+        self.assertEqual(identity['vdm']['version'], '2.1')
+        self.assertEqual((identity['ufp_type'], identity['dfp_type'], identity['connector_type_code']),
+                         ('none', 'power_brick', 2))
+        self.assertFalse(identity['usb_host_capable'] or identity['usb_device_capable'] or identity['modal_operation'])
+        self.assertEqual(identity['product_type_vdos'], [dict(index=5, kind='dfp', raw='40000000',
+            version_code=2, version='1.2', host_capability_code=0, port_number=0, reserved='00000000')])
+        self.assertNotIn('cable', model.decode('cable_identity', MEASURED_SOURCE_ID))
+
+    def test_source_identity_layout_validation(self):
+        drd = model.decode('source_identity', SYNTHETIC_DRD_ID)['identity']
+        self.assertTrue(drd['usb_host_capable'] and drd['usb_device_capable'] and drd['modal_operation'])
+        ufp, pad, dfp = drd['product_type_vdos']
+        self.assertEqual((ufp['version'], ufp['device_capability_code'], ufp['alternate_mode_code'], ufp['speed_code']),
+                         ('1.3', 9, 1, 3))
+        self.assertEqual(pad['kind'], 'pad')
+        self.assertEqual((dfp['host_capability_code'], dfp['port_number']), (5, 4))
+        invalid_pad = SYNTHETIC_DRD_ID[:20] + bytes.fromhex('01000000') + SYNTHETIC_DRD_ID[24:]
+        for raw in (invalid_pad, SYNTHETIC_DRD_ID[:-4], struct.pack('<I', 0xFF00B841) + MEASURED_SOURCE_ID[4:]):
+            self.assertTrue(all(v['kind'] == 'unknown' for v in model.decode('source_identity', raw)['identity']['product_type_vdos']))
+        unknown_vdo = model.decode('source_identity', MEASURED_SOURCE_ID[:-4] + struct.pack('<I', 0xE0000000))
+        self.assertNotIn('version', unknown_vdo['identity']['product_type_vdos'][0])
+        for raw in (MEASURED_SOURCE_ID[:12], struct.pack('<I', 0xFF00A881) + MEASURED_SOURCE_ID[4:]):
+            self.assertNotIn('identity', model.decode('source_identity', raw))
+
+    def test_measured_source_cap_ext_and_source_info(self):
+        d = model.decode('source_cap_ext', MEASURED_SCEDB)
+        self.assertEqual(d, dict(vid='32AC', pid='0022', xid='00000000', fw_version=0,
+                                 hw_version=0, spr_pdp_w=100, epr_pdp_w=240))
+        self.assertIsNone(model.decode('source_cap_ext', MEASURED_SCEDB[:24])['epr_pdp_w'])
+        self.assertIsNone(model.decode('source_cap_ext', MEASURED_SCEDB[:23]))
+        d = model.decode('source_info', MEASURED_SIDO)
+        self.assertEqual(d, dict(port_reported_pdp_w=1, port_present_pdp_w=240,
+            port_maximum_pdp_w=240, port_type=1, port_type_name='guaranteed', reserved=0))
+        d = model.decode('source_info', bytes.fromhex('6432647F'))
+        self.assertEqual((d['port_type_name'], d['reserved']), ('managed', 127))
+
+    def test_fixed_capabilities_and_battery_variable_pdo_units(self):
+        fixed, other, battery, variable, reserved = model.decode('spr_pdos', SYNTHETIC_PDOS)
+        self.assertEqual(fixed['capabilities'], dict(dual_role_power=True, usb_suspend_supported=True,
+            unconstrained_power=True, usb_communications_capable=True, dual_role_data=True,
+            unchunked_extended_messages_bit=1, epr_mode_capable_bit=1))
+        self.assertEqual((fixed['peak_current_code'], fixed['reserved']), (3, '00400000'))
+        self.assertNotIn('capabilities', other)
+        self.assertEqual(other['reserved'], '02000000')
+        self.assertEqual((battery['kind'], battery['min_mv'], battery['max_mv'], battery['max_power_mw']),
+                         ('battery', 5000, 12000, 45250))
+        self.assertEqual((variable['kind'], variable['min_mv'], variable['max_mv'], variable['current_ma']),
+                         ('variable', 16000, 20000, 2500))
+        self.assertEqual((reserved['index'], reserved['kind']), (5, 'reserved'))
+
+    def test_measured_headerless_and_synthetic_active_cable(self):
+        measured = model.decode('cable_identity', MEASURED_CABLE, 'km003c_cable')['cable']
+        self.assertEqual((measured['layout'], measured['vid'], measured['pid'], measured['max_vbus_mv'],
+                          measured['current_ma'], measured['epr_capable'], measured['speed_code']),
+                         ('pd3_assumed', '20C2', '0A14', 50000, 5000, True, 3))
+        self.assertEqual((measured['hw_version'], measured['fw_version'], measured['vdo_version_code'],
+                          measured['latency_code'], measured['connector_type_code'], measured['termination_code']),
+                         (4, 6, 0, 1, 2, 0))
+        self.assertFalse(measured['vconn_required'])
+        active = model.decode('cable_identity', struct.pack('<6I', 0xFF00A841, 0x20001234, 0, 0,
+            0x126A56DB, 0x55667788))['cable']
+        self.assertEqual((active['kind'], active['vdo_version_code'], active['latency_code'], active['termination_code']),
+                         ('active', 3, 2, 2))
+        self.assertTrue(active['sbu_supported'] and active['sbu_active'] and active['sop_double_prime_present'])
+        self.assertTrue(active['vconn_required'])
+        legacy = model.decode('cable_identity', struct.pack('<5I', 0xFF008041, 0x20001234, 0, 0,
+            0x000037BA))['cable']
+        self.assertEqual((legacy['layout'], legacy['vdo_version_code'], legacy['termination_code']), ('pd2', None, 2))
+        self.assertNotIn('sbu_supported', legacy)
+
     def test_revision_is_pd_spec_version_not_usb_bus_version(self):
         d = model.decode('revision',bytes.fromhex('00001731'))
         self.assertEqual(d,dict(pd_revision='3.1',pd_spec_version='1.7',reserved=0))
@@ -311,6 +435,13 @@ class PhoneTests(unittest.TestCase):
         cable_vector=dict(snapshot=cable,pages=transfer.encode_pages(cable),
                           url_pages=transfer.encode_pages(cable,base_url=transfer.DEFAULT_IMPORT_URL))
         vectors.append(cable_vector)
+        partial = model.new_snapshot('km003c_cable', '0000000000000014')
+        partial['capture_status'] = 'completed'
+        model.set_field(partial, 'cable_identity', 'partial', struct.pack('<5I', 0, 0, 0, 0, 0x80871e4e))
+        self.assertEqual(partial['fields']['cable_identity']['decoded'],
+                         dict(vdos=['00000000'] * 4, svids=['8087', '1E4E']))
+        vectors.append(dict(snapshot=partial, pages=transfer.encode_pages(partial),
+                            url_pages=transfer.encode_pages(partial, base_url=transfer.DEFAULT_IMPORT_URL)))
         rdo=struct.pack('<I',0x2301fe3c)
         for identifier,origin,status,raw in (
             (17,'km003c_pps','pass',rdo+bytes.fromhex('fe000002')),
@@ -337,6 +468,25 @@ class PhoneTests(unittest.TestCase):
             model.set_field(snap,'cable_identity','observed',struct.pack('<5I',header,identity,0,0x12340000,vdo))
             vectors.append(dict(snapshot=snap,pages=transfer.encode_pages(snap),
                                 url_pages=transfer.encode_pages(snap,base_url=transfer.DEFAULT_IMPORT_URL)))
+        measured_cable = model.new_snapshot('km003c_cable', '0000000000000020')
+        model.set_field(measured_cable, 'cable_identity', 'observed', MEASURED_CABLE)
+        vectors.append(dict(snapshot=measured_cable, pages=transfer.encode_pages(measured_cable),
+                            url_pages=transfer.encode_pages(measured_cable, base_url=transfer.DEFAULT_IMPORT_URL)))
+        for identifier, status, identity in ((33, MEASURED_STATUS, MEASURED_SOURCE_ID),
+                                            (34, SYNTHETIC_STATUS, SYNTHETIC_DRD_ID),
+                                            (35, SYNTHETIC_STATUS[:6], MEASURED_SOURCE_ID[:12]),
+                                            (36, SYNTHETIC_STATUS[:5], struct.pack('<I', 0xFF00B841) + MEASURED_SOURCE_ID[4:])):
+            snap = model.new_snapshot('km003c', f'{identifier:016x}')
+            model.set_field(snap, 'source_status', 'pass', status)
+            model.set_field(snap, 'source_identity', 'pass', identity)
+            model.set_field(snap, 'spr_pdos', 'observed', SYNTHETIC_PDOS)
+            vectors.append(dict(snapshot=snap, pages=transfer.encode_pages(snap),
+                                url_pages=transfer.encode_pages(snap, base_url=transfer.DEFAULT_IMPORT_URL)))
+        saved_pages = (FIXTURES/'stock-probe-06-pages.txt').read_text(encoding='ascii').splitlines()
+        saved = transfer.decode_pages(reversed(saved_pages))
+        self.assertEqual(saved['fields']['source_status']['raw'], '00060000000000')
+        self.assertEqual(transfer.encode_pages(saved, base_url=saved_pages[0].split('#')[0]), saved_pages)
+        vectors.append(dict(snapshot=saved, pages=[p.split('#')[1] for p in saved_pages], url_pages=saved_pages))
         actual=model.new_snapshot('km003c','0000000000000006')
         actual['capture_status']='imported'
         collector=Collector(actual)

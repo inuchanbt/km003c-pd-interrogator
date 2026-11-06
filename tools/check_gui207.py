@@ -355,12 +355,15 @@ def main():
     cpu.mem_write(page + 0x18, struct.pack('<I', 0x1db7f))
     cpu.mem_write(0x1fffacd8, struct.pack('<I', modal))
     cell_vector = 0x21002000
-    cpu.mem_write(table_ext, struct.pack('<HHI', 2, 5, cell_vector))
-    for index, name in enumerate(('VER', 'IdHead', 'CertStat', 'Product', 'Cable')):
+    cpu.mem_write(table_ext, struct.pack('<HHI', 2, 6, cell_vector))
+    for index, name in enumerate(('VER', 'IdHead', 'CertStat', 'Product', 'Cable', 'SVID')):
         label = 0x21002100 + index * 48
         cpu.mem_write(label, b'\x01' + name.encode() + b'\0')
-        cpu.mem_write(label + 24, b'\x010x00000000\0')
+        cpu.mem_write(label + 24, b'\x010x0000 0000\0' if name == 'SVID' else b'\x010x00000000\0')
         cpu.mem_write(cell_vector + index * 8, struct.pack('<II', label, label + 24))
+    def compact_urls(data, height=240):
+        return [bytes(cpu.mem_read(data + 12 + height * 30 + 153 * i, 153)).split(b'\0', 1)[0].decode()
+                for i in range(2)]
     cpu.mem_write(context, b'\x05')
     buttons((20, 19), now + 900); buttons((20, 19), now + 1650)
     call(symbols['kpd207_gui_tick']); buttons((), now + 1651)
@@ -368,26 +371,46 @@ def main():
     cable_data = word(source + 8)
     if cpu.mem_read(source + 42, 1) != b'\0':
         raise AssertionError('Zero Identity qualified a cable result')
+    svid_cell = 0x21002100 + 5 * 48 + 24
+    cpu.mem_write(svid_cell, b'\x010x8087-1e4e\0')
+    call(symbols['kpd207_gui_tick'])
+    if cpu.mem_read(source + 42, 1) != b'\0':
+        raise AssertionError('Malformed SVID qualified a cable result')
+    # Exact stock format observed for the EJ903W result with empty Identity.
+    cpu.mem_write(svid_cell, b'\x010x8087 1e4e\0')
+    call(symbols['kpd207_gui_tick'])
+    if cpu.mem_read(source + 42, 1) != b'\x02':
+        raise AssertionError('An SVID-only result did not update the open QR screen')
+    partial_urls = compact_urls(cable_data)
+    partial = transfer.decode_pages(partial_urls)
+    if (partial['origin'] != 'km003c_cable' or partial['fields']['cable_identity'] !=
+            dict(status='partial', raw='0' * 32 + '4E1E8780',
+                 decoded=dict(vdos=['00000000'] * 4, svids=['8087', '1E4E']))):
+        raise AssertionError('SVID-only QR misrepresented the result as cable Identity')
     cpu.mem_write(context, b'\x04')
     call(symbols['kpd207_gui_tick'])
     # Set a valid native result after a new scan, with PD cache still empty.
     cpu.mem_write(0x21002100 + 48 + 24, b'\x010x18000000\0')
     cpu.mem_write(0x21002100 + 4 * 48 + 24, b'\x010x00082650\0')
     call(symbols['kpd207_gui_tick'])
-    if cpu.mem_read(source + 2588, 1) != b'\0':
-        raise AssertionError('A stale table in non-cable mode replaced the PD result')
+    if word(source + 2576) != 0x80871e4e or word(source + 2560) != 0:
+        raise AssertionError('A stale table in non-cable mode replaced the saved cable result')
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    buttons((20, 19), now + 1660); buttons((20, 19), now + 2410)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 2411)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    if compact_urls(word(source + 8)) != partial_urls:
+        raise AssertionError('Leaving the cable test changed the retained SVID-only result')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(context, b'\x05')
     buttons((20, 19), now + 2500); buttons((20, 19), now + 3250)
     call(symbols['kpd207_gui_tick']); buttons((), now + 3251)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
     cable_data = word(source + 8)
-    def compact_urls(data, height=240):
-        return [bytes(cpu.mem_read(data + 12 + height * 30 + 153 * i, 153)).split(b'\0', 1)[0].decode()
-                for i in range(2)]
     urls = compact_urls(cable_data)
     cable = transfer.decode_pages(urls)
     if (cable['origin'] != 'km003c_cable' or cable['measurement_id'] == owned_id
+            or cable['measurement_id'] == partial['measurement_id']
             or cable['fields']['cable_identity']['raw'] != '00000018000000000000000050260800'
             or cable['fields']['spr_pdos']['status'] != 'not_requested'
             or cpu.mem_read(source + 42, 1) != b'\x02'):

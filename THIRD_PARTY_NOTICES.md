@@ -13,7 +13,9 @@ The source preparer retrieves, without vendoring private data:
   Only its independent backup crate and license are prepared for the native host.
 
 These sources stay in ignored `.deps/native-host/`. The patch, source preparer and
-Cargo lockfiles are tracked. Private recovery files and compiled host binaries are not distributed.
+Cargo lockfiles are tracked. The Windows release ZIP includes the compiled host and backup tools,
+their dependency notices, and the stock-free overlay components. Users generate their private
+update and recovery files from their own qualified backup.
 
 ## Nayuki QR Code generator (C)
 
