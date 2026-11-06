@@ -84,7 +84,7 @@ class TransferTests(unittest.TestCase):
         self.assertTrue(all(len(p.encode('ascii'))<=152 for p in pages))
         self.assertEqual(transfer.decode_pages(list(reversed(pages)))['fields'],original['fields'])
         self.assertEqual(transfer.decode_pages([transfer.normalize_page(p) for p in pages])['fields'],original['fields'])
-        old = transfer.encode_pages(original, base_url=transfer.DEFAULT_IMPORT_URL.replace('v=3', 'v=2'))
+        old = transfer.encode_pages(original, base_url=transfer.DEFAULT_IMPORT_URL.replace('v=4', 'v=2'))
         self.assertEqual(transfer.decode_pages(old)['fields'], original['fields'])
     def test_url_validation_and_encoded_fragments(self):
         from urllib.parse import quote
@@ -311,6 +311,16 @@ class PhoneTests(unittest.TestCase):
         cable_vector=dict(snapshot=cable,pages=transfer.encode_pages(cable),
                           url_pages=transfer.encode_pages(cable,base_url=transfer.DEFAULT_IMPORT_URL))
         vectors.append(cable_vector)
+        rdo=struct.pack('<I',0x2301fe3c)
+        for identifier,origin,status,raw in (
+            (17,'km003c_pps','pass',rdo+bytes.fromhex('fe000002')),
+            (18,'km003c_pps','no_response',rdo),
+            (19,'km003c','pass',bytes.fromhex('ffffff08')),
+        ):
+            snap=model.new_snapshot(origin,f'{identifier:016x}')
+            model.set_field(snap,'pps_status',status,raw)
+            vectors.append(dict(snapshot=snap,pages=transfer.encode_pages(snap),
+                                url_pages=transfer.encode_pages(snap,base_url=transfer.DEFAULT_IMPORT_URL)))
         # Passive EPR, legacy directional bits, active without VBUS, deprecated voltage,
         # contradictory EPR and reserved speed, and an unknown VDO version.
         for identifier, header, identity, vdo in (

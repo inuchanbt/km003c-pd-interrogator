@@ -61,6 +61,32 @@ static uint16_t u16(volatile const uint8_t *p) {
     return (uint16_t)p[0] | (uint16_t)p[1] << 8;
 }
 
+static uint32_t u32(volatile const uint8_t *p) {
+    return u16(p) | (uint32_t)u16(p + 2) << 16;
+}
+
+/* The native Request path copies the wire RDO to +0x118. +0x114 is
+ * the target RDO, which can change before the policy engine sends it. */
+uint32_t kpd207_pps_contract(void) {
+    volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
+    unsigned selected = p[3] >> 4;
+    uint8_t phase = p[0x29], flags = p[0x3d5];
+    if (p[0] != 0 || phase != 0x24 || flags & 8 || !selected || selected > 7)
+        return 0;
+    uint16_t header = u16(p + 0x4e);
+    if ((header & 0x801f) != 1 || selected > (header >> 12 & 7)) return 0;
+    const volatile uint8_t *entry = p + 0xa8 + (selected - 1) * 4;
+    uint32_t pdo = u32(entry), rdo = u32(p + 0x118);
+    unsigned voltage = (rdo >> 9) & 2047, current = rdo & 127;
+    if (pdo >> 28 != 12 || rdo >> 28 != selected ||
+        voltage < ((pdo >> 8) & 255) * 5 || voltage > ((pdo >> 17) & 255) * 5 ||
+        !current || current > (pdo & 127)) return 0;
+    if (p[0] != 0 || p[0x29] != phase || p[0x3d5] != flags ||
+        p[3] >> 4 != selected || u16(p + 0x4e) != header || u32(entry) != pdo ||
+        u32(p + 0x114) != rdo || u32(p + 0x118) != rdo) return 0;
+    return rdo;
+}
+
 static void sample(struct kpd207_sample *s) {
     volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
     memset(s, 0, sizeof(*s));
@@ -109,6 +135,7 @@ static void records(struct kpd207_info *i, uint32_t now) {
     unsigned delta = (uint16_t)(total - i->ring_total);
     if (!delta) return;
     if (delta > 320) {
+        kpd207_pps_finish(&i->manual_pps, KPD_INVALID);
         kpd207_info_resettle(i, KPD_INVALID);
         i->ring_total = total; i->ring_position = position; return;
     }
@@ -121,14 +148,24 @@ static void records(struct kpd207_info *i, uint32_t now) {
     }
     if ((p[0x3d9] & 1) || total != u16(p + 0x780) || position != u16(p + 0x77c)) return;
     i->ring_total = total; i->ring_position = position;
-    if (!kpd207_info_records(i, bytes, delta, now)) kpd207_info_stop(i, KPD_INVALID);
+    if (!kpd207_info_records(i, bytes, delta, now)) {
+        kpd207_pps_finish(&i->manual_pps, KPD_INVALID);
+        kpd207_info_stop(i, KPD_INVALID);
+    }
+}
+
+static void enqueue(const uint8_t *command, unsigned length) {
+    /* Same asynchronous enqueue as stock 'pd data='. Native owns the PHY. */
+    ((void (*)(const uint8_t *, unsigned))(uintptr_t)0x3f669)(command, length);
 }
 
 __attribute__((noinline))
 void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {
     volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
+    struct kpd207_pps *manual = &i->manual_pps;
     uint8_t phase = p[0x29];
     if (!phase || p[0] != 0) {
+        kpd207_pps_finish(manual, KPD_RESET);
         if (i->attached) kpd207_info_stop(i, KPD_RESET);
         kpd207_info_hold(i, c, now);
         /* Arm a new attachment without clearing the retained completed result. */
@@ -140,6 +177,10 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
         kpd207_info_begin(i);
         i->cable_emulation = p[3] & 7;
     }
+    if (manual->stage != KPD207_PPS_IDLE && manual->stage != KPD207_PPS_DONE &&
+        ((p[0x3d5] & 8) || p[3] >> 4 != manual->rdo >> 28 ||
+         u32(p + 0x114) != manual->rdo || u32(p + 0x118) != manual->rdo))
+        kpd207_pps_finish(manual, KPD_RESET);
     records(i, now);
     uint8_t link = kpd207_info_link(c, phase, (p[0x3d5] & 8) != 0);
     unsigned selected = p[3] >> 4;
@@ -149,10 +190,27 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
         uint32_t pdo = (uint32_t)u16(raw) | (uint32_t)u16(raw + 2) << 16;
         pps = (pdo >> 28) == 12; /* Actual selected native PDO is PPS APDO. */
     }
-    kpd207_info_tick(i, link, pps, now);
+    bool busy = i->stage == KPD207_INFO_TX || i->stage == KPD207_INFO_REPLY;
+    if (manual->stage == KPD207_PPS_IDLE || manual->stage == KPD207_PPS_DONE || busy)
+        kpd207_info_tick(i, link, pps, now);
     /* Native reset may receive new SPR-only PDOs before it reaches idle.
      * Completed information keeps the PDOs and ID from completion time. */
     kpd207_info_hold(i, c, now);
+    if (manual->stage == KPD207_PPS_COMMAND) {
+        if ((uint32_t)(now - manual->since) >= 2500) kpd207_pps_finish(manual, KPD_TX_FAILED);
+        else if (!busy && !(p[0x27] & 5) && kpd207_pps_contract() == manual->rdo) {
+            const uint8_t command[] = {0, 0x94, 0};
+            manual->stage = KPD207_PPS_TX;
+            manual->since = now;
+            enqueue(command, sizeof(command));
+        }
+        return;
+    }
+    if (manual->stage == KPD207_PPS_TX || manual->stage == KPD207_PPS_REPLY) {
+        if ((uint32_t)(now - manual->since) >= 1200)
+            kpd207_pps_finish(manual, manual->stage == KPD207_PPS_TX ? KPD_TX_FAILED : KPD_NO_RESPONSE);
+        return;
+    }
     if (link == KPD207_LINK_EPR_PENDING) link = KPD207_LINK_SPR;
     if (link != i->settle_link || i->stage != KPD207_INFO_COMMAND ||
         p[0] != 0 || p[0x29] != 0x24 || (p[0x27] & 5)) return;
@@ -160,8 +218,5 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
     unsigned length = kpd207_info_command(i, command);
     if (!length) return;
     kpd207_info_sent(i, now);
-    /* Same asynchronous enqueue used by stock 'pd data='. It copies the bytes
-     * immediately; native policy/PHY retain MessageID, GoodCRC and bus ownership.
-     * Do not call its raw PHY transmitter or alter a negotiated contract. */
-    ((void (*)(const uint8_t *, unsigned))(uintptr_t)0x3f669)(command, length);
+    enqueue(command, length);
 }

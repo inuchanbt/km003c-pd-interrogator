@@ -5,7 +5,7 @@ const transfers=new KPDStore.Store(browserStorage);
 let snapshot=null,stream=null,scanFrame=null;
 const names={spr_pdos:'SPR PDO',epr_pdos:'EPR PDO',revision:'PDリビジョン',source_cap_ext:'電源の識別情報',source_info:'電源のPDP情報',source_status:'電源ステータス',pps_status:'PPSステータス',manufacturer:'メーカー情報',cable_identity:'ケーブルIdentity',source_identity:'電源Identity'};
 const statuses={not_requested:'未要求',pass:'取得成功',observed:'受信を記録',unsupported:'非対応の応答',no_response:'無応答',tx_failed:'送信失敗',rejected:'拒否',busy:'待機応答',reset:'リセット',invalid:'取得失敗',partial:'一部のみ取得',unknown:'不明',emulation_enabled:'e-Markerシミュレーション有効時の記録'};
-const measurementNames={km003c:'電源測定',km003c_cable:'ケーブル測定',ch32h417:'CH32H417',demo:'DEMO'};
+const measurementNames={km003c:'電源測定',km003c_cable:'ケーブル測定',km003c_pps:'PPS測定',ch32h417:'CH32H417',demo:'DEMO'};
 function report(error){$('error').textContent=error?.message||String(error||'');}
 function addPages(texts){
   try{
@@ -30,11 +30,12 @@ function showCurrent(){
 function render(){
   $('result').classList.remove('hidden');$('badges').replaceChildren();$('rows').replaceChildren();
   const cable=snapshot.origin==='km003c_cable';
+  const pps=snapshot.origin==='km003c_pps';
   for(const text of [measurementNames[snapshot.origin],`ID ${snapshot.measurement_id}`]){const badge=document.createElement('span');badge.className='badge';badge.textContent=text;$('badges').append(badge);}
   const warning=snapshot.origin==='demo'?'デモ用の架空データです。実際の測定結果ではありません。':['failed','interrupted','unknown'].includes(snapshot.capture_status)?`取得状態: ${snapshot.capture_status}。一部の情報が取得できていない可能性があります。`:'';
   $('notice').textContent=warning;$('notice').classList.toggle('hidden',!warning);
   for(const [name,field]of Object.entries(snapshot.fields)){
-    if(cable && name!=='cable_identity')continue;
+    if((cable && name!=='cable_identity') || (pps && name!=='pps_status'))continue;
     const tr=document.createElement('tr'),th=document.createElement('th'),td=document.createElement('td');
     th.scope='row';th.textContent=names[name];
     const d=field.decoded;let text=statuses[field.status]||field.status;
@@ -46,6 +47,17 @@ function render(){
       else if(name==='source_info')text=`報告 ${d.port_reported_pdp_w} W / 現在 ${d.port_present_pdp_w} W / 最大 ${d.port_maximum_pdp_w} W`;
       else if(name==='source_cap_ext')text=`VID ${d.vid} / PID ${d.pid}\nSPR ${d.spr_pdp_w} W${d.epr_pdp_w===null?'':` / EPR ${d.epr_pdp_w} W`}`;
       else if(name==='manufacturer')text=d.name||`名称は空欄 / VID ${d.vid} / PID ${d.pid}`;
+      else if(name==='pps_status'){
+        const value=(number,unit)=>number===null?'報告なし':`${number/1000} ${unit}`;
+        const lines=[];
+        if(d.requested_mv!==undefined)lines.push(`要求値 ${value(d.requested_mv,'V')} / ${value(d.requested_ma,'A')}`);
+        if(d.reported_mv!==undefined){
+          lines.push(`電源の応答 ${value(d.reported_mv,'V')} / ${value(d.reported_ma,'A')}`);
+          lines.push(d.current_limit?'電流制限中':'定電圧動作');
+          if(d.temperature_code)lines.push(`温度状態 ${['','正常','警告','過温度'][d.temperature_code]}`);
+        }
+        text=lines.join('\n');
+      }
       else if(name==='cable_identity'){
         text=d.cable?KPD.formatCable(d.cable):`${d.vdos.length} VDOを保存（ケーブルの仕様は不明）`;
         if(cable){

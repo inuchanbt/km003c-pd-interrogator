@@ -10,4 +10,5 @@ struct kpd207_random {
 /* Native exact-build adapter. All polling is bounded to one step per GUI tick. */
 void kpd207_acquire_tick(struct kpd207_capture *, struct kpd207_random *, uint32_t now);
 void kpd207_information_tick(struct kpd207_info *, const struct kpd207_capture *, uint32_t now);
+uint32_t kpd207_pps_contract(void);
 #endif

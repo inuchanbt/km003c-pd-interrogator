@@ -272,7 +272,7 @@ class NativeTests(unittest.TestCase):
             self.assertFalse(self.dll.kpd_encode_page(C.byref(frozen), page, C.byref(work)))
             self.assertEqual(work.url, b'')
             self.assertFalse(self.dll.kpd_qr_row(C.byref(work), 0, row))
-        for origin, status in ((4, 0), (0, 5)):
+        for origin, status in ((len(model.ORIGINS), 0), (0, 5)):
             snap.origin, snap.capture_status = origin, status
             self.assertFalse(self.dll.kpd_freeze(C.byref(snap), C.byref(frozen)))
 

@@ -36,11 +36,10 @@ typedef bool (*keypad_cb)(void *, void *);
 struct image_descriptor { uint32_t header, size; const uint8_t *pixels; };
 struct screen_data {
     _Alignas(uint32_t) uint8_t pixels[8 + 240 * 30];
-    uint8_t pages;
-    bool cable;
+    uint8_t pages, origin;
 };
 struct power_screen { struct screen_data display; struct kpd_transfer transfer; };
-struct cable_screen { struct screen_data display; char urls[2][KPD_URL_MAX + 1]; };
+struct compact_screen { struct screen_data display; char urls[2][KPD_URL_MAX + 1]; };
 struct cable_result {
     void *table;
     uint32_t vdos[4];
@@ -151,14 +150,16 @@ static bool render(struct screen_state *s, uint32_t now) {
     d->pixels[7] = 255;
     if (!d->pages) {
         bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
-        bool epr = !d->cable && kpd207_info_waiting_epr(&s->info, &s->capture, now);
-        text(d, epr ? "READING EPR" : reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 32, 80, 4);
-        text(d, reading || epr ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
+        bool pps = d->origin == KPD_KM003C_PPS;
+        bool epr = !d->origin && kpd207_info_waiting_epr(&s->info, &s->capture, now);
+        text(d, pps ? "READING PPS" : epr ? "READING EPR" : reading ? "READING PD" :
+            s->random.phase == 3 ? "ID ERROR" : "NO DATA", 32, 80, 4);
+        text(d, reading || epr || pps ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
         text(d, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
-    if (d->cable) {
-        const struct cable_screen *screen = (const struct cable_screen *)d;
+    if (d->origin) {
+        const struct compact_screen *screen = (const struct compact_screen *)d;
         memcpy(work.url, screen->urls[s->page - 1], sizeof(work.url));
         if (!kpd_encode_url(&work)) return false;
     } else if (!kpd_encode_page(&((struct power_screen *)d)->transfer, s->page, &work)) return false;
@@ -170,7 +171,8 @@ static bool render(struct screen_state *s, uint32_t now) {
     }
     /* Up to 61 pages for the bounded maximum schema, outside quiet zone. */
     char label[12];
-    memcpy(label, d->cable ? "CABLE 01/01" : "SAVED 01/01", sizeof(label));
+    memcpy(label, d->origin == KPD_KM003C_PPS ? "PPS   01/01" :
+        d->origin == KPD_KM003C_CABLE ? "CABLE 01/01" : "SAVED 01/01", sizeof(label));
     label[6] = (char)('0' + s->page / 10); label[7] = (char)('0' + s->page % 10);
     label[9] = (char)('0' + d->pages / 10); label[10] = (char)('0' + d->pages % 10);
     text(d, label, 98, 235, 1);
@@ -257,15 +259,20 @@ static void observe_cable(struct screen_state *s) {
 }
 
 __attribute__((noinline))
-static bool freeze_cable(struct screen_state *s) {
-    /* Store only the two bounded URLs while the native result table is open. */
-    struct cable_screen *screen = (struct cable_screen *)s->data;
+static bool freeze_compact(struct screen_state *s) {
+    /* Keep only two URLs on the heap alongside the native result screen. */
+    struct compact_screen *screen = (struct compact_screen *)s->data;
     struct kpd_transfer transfer;
-    struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
-    memcpy(snapshot.id, s->cable.id, 8);
-    snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){
-        (const uint8_t *)s->cable.vdos, sizeof(s->cable.vdos), KPD_OBSERVED, true};
-    if (!kpd_freeze(&snapshot, &transfer) || transfer.pages != 2 ||
+    if (s->data->origin == KPD_KM003C_PPS) {
+        if (!kpd207_pps_freeze(&s->info.manual_pps, &transfer)) return false;
+    } else {
+        struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
+        memcpy(snapshot.id, s->cable.id, 8);
+        snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){
+            (const uint8_t *)s->cable.vdos, sizeof(s->cable.vdos), KPD_OBSERVED, true};
+        if (!kpd_freeze(&snapshot, &transfer)) return false;
+    }
+    if (transfer.pages != 2 ||
         !kpd_page_url(&transfer, 1, screen->urls[0]) ||
         !kpd_page_url(&transfer, 2, screen->urls[1])) return false;
     screen->display.pages = transfer.pages;
@@ -273,10 +280,11 @@ static bool freeze_cable(struct screen_state *s) {
 }
 
 static bool freeze_result(struct screen_state *s, uint32_t now) {
+    if (s->data->origin == KPD_KM003C_PPS) return freeze_compact(s);
     if (s->info.attached && s->info.stage != KPD207_INFO_DONE) return false;
-    if (s->data->cable) {
+    if (s->data->origin == KPD_KM003C_CABLE) {
         if (!s->prefer_cable || (cable_mode() && !s->cable.saved)) return false;
-        return freeze_cable(s);
+        return freeze_compact(s);
     }
     if (kpd207_info_waiting_epr(&s->info, &s->capture, now)) return false;
     struct kpd_transfer *transfer = &((struct power_screen *)s->data)->transfer;
@@ -288,14 +296,16 @@ static bool freeze_result(struct screen_state *s, uint32_t now) {
 static void open_result(struct screen_state *s, void *layer, uint32_t now) {
     if (!s->input) return;
     s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
-    bool cable = cable_mode() || (s->prefer_cable && !s->info.attached);
-    s->data = mem_alloc(cable ? sizeof(struct cable_screen) : sizeof(struct power_screen));
+    uint32_t rdo = kpd207_pps_contract();
+    uint8_t origin = rdo ? KPD_KM003C_PPS :
+        (cable_mode() || (s->prefer_cable && !s->info.attached)) ? KPD_KM003C_CABLE : KPD_KM003C;
+    s->data = mem_alloc(origin ? sizeof(struct compact_screen) : sizeof(struct power_screen));
     if (!s->data) return;
     s->page = 1;
     s->data->pages = 0;
-    s->data->cable = cable;
-    if (!cable) memset(&((struct power_screen *)s->data)->transfer, 0, sizeof(struct kpd_transfer));
-    (void)freeze_result(s, now);
+    s->data->origin = origin;
+    if (!origin) memset(&((struct power_screen *)s->data)->transfer, 0, sizeof(struct kpd_transfer));
+    if (!rdo) (void)freeze_result(s, now);
     if (!render(s, now)) goto failed;
     s->descriptor.header = 7u | (240u << 10) | (240u << 21); /* INDEXED_1BIT */
     s->descriptor.size = sizeof(s->data->pixels);
@@ -309,6 +319,15 @@ static void open_result(struct screen_state *s, void *layer, uint32_t now) {
     obj_set_signal(s->image, image_signal);
     group_add(s->group, s->image);
     indev_set_group(s->input, s->group);
+    if (rdo) {
+        struct kpd207_pps *manual = &s->info.manual_pps;
+        if (manual->stage == KPD207_PPS_IDLE || manual->stage == KPD207_PPS_DONE) {
+            if (!kpd207_capture_take_id(&s->capture, manual->id)) goto failed;
+            manual->rdo = rdo;
+            manual->since = now;
+            manual->stage = KPD207_PPS_COMMAND;
+        }
+    }
     return;
 failed:
     close_screen(s);

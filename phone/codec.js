@@ -5,7 +5,7 @@
     'source_status','pps_status','manufacturer','cable_identity','source_identity'];
   const states = ['not_requested','pass','observed','unsupported','no_response',
     'tx_failed','rejected','busy','reset','invalid','partial','unknown','emulation_enabled'];
-  const origins = ['km003c','ch32h417','demo','km003c_cable'];
+  const origins = ['km003c','ch32h417','demo','km003c_cable','km003c_pps'];
   const captureStates = ['unknown','completed','failed','interrupted','imported'];
   const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
   function crc32(bytes) {
@@ -84,6 +84,23 @@
     if(name==='source_info' && bytes.length===4) return {port_reported_pdp_w:bytes[0],port_present_pdp_w:bytes[1],port_maximum_pdp_w:bytes[2],port_type:bytes[3]>>>7,reserved:bytes[3]&127};
     if(name==='source_cap_ext' && bytes.length>=24) return {vid:u16(0).toString(16).toUpperCase().padStart(4,'0'),pid:u16(2).toString(16).toUpperCase().padStart(4,'0'),xid:u32(4).toString(16).toUpperCase().padStart(8,'0'),fw_version:bytes[8],hw_version:bytes[9],spr_pdp_w:bytes[23],epr_pdp_w:bytes.length>=25?bytes[24]:null};
     if(name==='manufacturer' && bytes.length>=4) return {vid:u16(0).toString(16).toUpperCase().padStart(4,'0'),pid:u16(2).toString(16).toUpperCase().padStart(4,'0'),name:new TextDecoder().decode(bytes.slice(4)).split('\0',1)[0].replace(/ +$/,'')};
+    if(name==='pps_status') {
+      const result={};
+      let offset=0;
+      if(origin==='km003c_pps'){
+        if(bytes.length!==4 && bytes.length!==8)return null;
+        const request=u32(0);
+        Object.assign(result,{requested_mv:((request>>>9)&2047)*20,requested_ma:(request&127)*50});
+        offset=4;
+      }
+      if(bytes.length===offset+4){
+        const voltage=u16(offset),current=bytes[offset+2],flags=bytes[offset+3];
+        if(!(flags&0xF1))Object.assign(result,{reported_mv:voltage===65535?null:voltage*20,
+          reported_ma:current===255?null:current*50,temperature_code:(flags>>>1)&3,
+          current_limit:!!(flags&8),flags});
+      }
+      return Object.keys(result).length?result:null;
+    }
     if(['cable_identity','source_identity'].includes(name)) {
       if(bytes.length%4) throw Error('VDOの長さが不正です');
       const words=[]; for(let i=0;i<bytes.length;i+=4) words.push(u32(i));

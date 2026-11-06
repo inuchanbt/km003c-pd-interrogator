@@ -141,11 +141,40 @@ static void finish(struct kpd207_info *i, unsigned name, uint8_t status, uint32_
     if (requested && status != KPD_PARTIAL) { i->stage = KPD207_INFO_GUARD; i->since = now; }
 }
 
+void kpd207_pps_finish(struct kpd207_pps *p, uint8_t status) {
+    if (p->stage == KPD207_PPS_IDLE || p->stage == KPD207_PPS_DONE) return;
+    p->status = status;
+    p->stage = KPD207_PPS_DONE;
+}
+
+static void pps_packet(struct kpd207_pps *p, bool tx, uint16_t h, const uint8_t *data, uint32_t now) {
+    unsigned count = (h >> 12) & 7, type = h & 31;
+    if (p->stage != KPD207_PPS_TX && p->stage != KPD207_PPS_REPLY) return;
+    if (!count && type == 13) { kpd207_pps_finish(p, KPD_RESET); return; }
+    if (p->stage == KPD207_PPS_TX) {
+        if (tx && (h & 0xf11f) == 20) {
+            p->stage = KPD207_PPS_REPLY; p->since = now;
+        }
+        return;
+    }
+    if (tx || !(h & 0x100)) return;
+    if ((h & 0x801f) == 0x800c) {
+        if (count != 2 || (u16(data) & 0x7fff) != 4 || (data[5] & 0xf1)) {
+            kpd207_pps_finish(p, KPD_INVALID); return;
+        }
+        memcpy(p->reply, data + 2, 4);
+        kpd207_pps_finish(p, KPD_PASS);
+    } else if (!count && type == 16) kpd207_pps_finish(p, KPD_UNSUPPORTED);
+    else if (!count && type == 4) kpd207_pps_finish(p, KPD_REJECTED);
+    else if (!count && type == 12) kpd207_pps_finish(p, KPD_BUSY);
+}
+
 static void packet(struct kpd207_info *i, bool tx, uint8_t sop, const uint8_t *w, unsigned n, uint32_t now) {
-    if (!i->attached || i->stage == KPD207_INFO_DONE) return;
     if (n < 2 || sop > 1) return;
     uint16_t h = u16(w); unsigned count = (h >> 12) & 7, type = h & 31;
     if (n != 2 + count * 4) return;
+    if (!sop) pps_packet(&i->manual_pps, tx, h, w + 2, now);
+    if (!i->attached || i->stage == KPD207_INFO_DONE) return;
     if (sop == 0 && !count && type == 13) { kpd207_info_resettle(i, KPD_RESET); return; }
     const uint8_t *p = w + 2;
     if (tx) {
@@ -230,12 +259,26 @@ bool kpd207_info_records(struct kpd207_info *i, const uint8_t *b, unsigned n, ui
             packet(i, (flag & 0x40) != 0, b[pos + 5], b + pos + 6, len - 6, now);
         else if ((flag == 5 || flag == 0x45) && len == 6) {
             uint8_t code = b[pos + 5];
+            if (code == 0x22 || code == 0x04 || code == 0x05)
+                kpd207_pps_finish(&i->manual_pps, KPD_RESET);
             if (code == 0x22) kpd207_info_stop(i, KPD_RESET);
             else if (code == 0x04 || code == 0x05) kpd207_info_resettle(i, KPD_RESET);
         } else return false;
         pos += len;
     }
     return true;
+}
+
+bool kpd207_pps_freeze(const struct kpd207_pps *p, struct kpd_transfer *out) {
+    if (p->stage != KPD207_PPS_DONE) return false;
+    bool received = p->status == KPD_PASS;
+    uint8_t raw[8];
+    for (unsigned i = 0; i < 4; ++i) raw[i] = (uint8_t)(p->rdo >> (8 * i));
+    if (received) memcpy(raw + 4, p->reply, 4);
+    struct kpd_snapshot snapshot = {.origin = KPD_KM003C_PPS, .capture_status = 1};
+    memcpy(snapshot.id, p->id, 8);
+    snapshot.fields[KPD_PPS_STATUS] = (struct kpd_field){raw, received ? 8 : 4, p->status, true};
+    return kpd_freeze(&snapshot, out);
 }
 
 void kpd207_info_hold(struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {

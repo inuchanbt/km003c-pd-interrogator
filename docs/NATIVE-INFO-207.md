@@ -45,6 +45,10 @@ SPRの広告とEPR内のSPR部分は同じ並びとは限らないため、そ�
 | ケーブルIdentity | 純正が行うSOP′ Discover Identityの要求と応答を観測。独自のVCONN操作はしない |
 
 PPS契約がない場合や、純正がケーブルIdentityを要求していない場合は、その項目を `not_requested` とします。
+
+純正トリガー画面でPPS契約を成立させ、出力が安定してから左右同時長押しすると、独立したPPS測定を開始します。
+送信済みのPPS要求値と、直後のGet_PPS_Statusに対する応答を2枚のQRに保存します。
+応答が得られなかった場合も、要求値と取得結果を確認できます。iPhoneの履歴では「PPS測定」と表示されます。
 実際に見たケーブル要求に応答がなければ `no_response`、ACKを回収した場合は `observed` です。
 追加GETではネイティブ送信パケットを確認した後の対応応答だけを `pass` にします。
 Not_Supported / Reject / Waitは、それぞれ `unsupported` / `rejected` / `busy` です。

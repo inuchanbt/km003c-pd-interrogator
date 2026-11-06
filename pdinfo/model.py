@@ -7,7 +7,7 @@ FIELDS = ('spr_pdos', 'epr_pdos', 'revision', 'source_cap_ext', 'source_info',
           'source_status', 'pps_status', 'manufacturer', 'cable_identity', 'source_identity')
 STATES = ('not_requested', 'pass', 'observed', 'unsupported', 'no_response',
           'tx_failed', 'rejected', 'busy', 'reset', 'invalid', 'partial', 'unknown', 'emulation_enabled')
-ORIGINS = ('km003c', 'ch32h417', 'demo', 'km003c_cable')
+ORIGINS = ('km003c', 'ch32h417', 'demo', 'km003c_cable', 'km003c_pps')
 CAPTURE_STATES = ('unknown', 'completed', 'failed', 'interrupted', 'imported')
 
 
@@ -104,6 +104,22 @@ def decode(name, raw, origin=None):
         return dict(vid=f'{int.from_bytes(raw[:2], "little"):04X}',
                     pid=f'{int.from_bytes(raw[2:4], "little"):04X}',
                     name=raw[4:].split(b'\0', 1)[0].decode('utf-8', errors='replace').rstrip(' '))
+    if name == 'pps_status':
+        result = {}
+        if origin == 'km003c_pps':
+            if len(raw) not in (4, 8):
+                return None
+            rdo = int.from_bytes(raw[:4], 'little')
+            result.update(requested_mv=(rdo >> 9 & 2047) * 20, requested_ma=(rdo & 127) * 50)
+            raw = raw[4:]
+        if len(raw) == 4:
+            voltage, current, flags = struct.unpack('<HBB', raw)
+            if not flags & 0xF1:
+                result.update(reported_mv=None if voltage == 65535 else voltage * 20,
+                              reported_ma=None if current == 255 else current * 50,
+                              temperature_code=flags >> 1 & 3,
+                              current_limit=bool(flags & 8), flags=flags)
+        return result or None
     if name in ('cable_identity', 'source_identity'):
         vdos = words(raw)
         result = dict(vdos=[f'{v:08X}' for v in vdos])
@@ -112,7 +128,7 @@ def decode(name, raw, origin=None):
             if cable is not None:
                 result['cable'] = cable
         return result
-    # Status/PPS Status stay raw until unknown-value semantics are implemented.
+    # Source Status stays raw until unknown-value semantics are implemented.
     return None
 
 

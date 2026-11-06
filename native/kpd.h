@@ -15,9 +15,9 @@
 #define KPD_QR_PACKED 301
 #define KPD_QR_BUFFER 302
 #define KPD_SCREEN_SIZE 240
-#define KPD_IMPORT_URL "https://inuchanbt.github.io/km003c-pd-interrogator/?v=3#"
+#define KPD_IMPORT_URL "https://inuchanbt.github.io/km003c-pd-interrogator/?v=4#"
 
-enum kpd_origin { KPD_KM003C, KPD_CH32H417, KPD_DEMO, KPD_KM003C_CABLE };
+enum kpd_origin { KPD_KM003C, KPD_CH32H417, KPD_DEMO, KPD_KM003C_CABLE, KPD_KM003C_PPS };
 
 enum kpd_status {
     KPD_NOT_REQUESTED, KPD_PASS, KPD_OBSERVED, KPD_UNSUPPORTED,

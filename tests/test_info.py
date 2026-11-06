@@ -21,6 +21,11 @@ class InfoField(C.Structure):
                 ('chunks', C.c_uint16), ('status', U8), ('present', U8)]
 
 
+class ManualPps(C.Structure):
+    _fields_ = [('rdo', C.c_uint32), ('since', C.c_uint32), ('id', U8 * 8),
+                ('reply', U8 * 4), ('status', U8), ('stage', U8)]
+
+
 class Info(C.Structure):
     _fields_ = [('fields', InfoField * 8), ('since', C.c_uint32),
                 ('ring_total', C.c_uint16), ('ring_position', C.c_uint16),
@@ -29,7 +34,7 @@ class Info(C.Structure):
                 ('tx_length', U8), ('tx_wire', U8 * 30), ('cable_emulation', U8),
                 ('pdos', CacheSample),
                 ('id', U8 * 8), ('frozen', C.c_bool), ('settle_link', U8),
-                ('startup_since', C.c_uint32)]
+                ('startup_since', C.c_uint32), ('manual_pps', ManualPps)]
 
 
 def record(wire, sop=0, tx=False):
@@ -66,10 +71,12 @@ class InfoTests(unittest.TestCase):
             'kpd207_info_waiting_epr': [C.POINTER(Info), C.POINTER(CacheCapture), C.c_uint32],
             'kpd207_info_records': [C.POINTER(Info), C.POINTER(U8), C.c_uint, C.c_uint32],
             'kpd207_info_freeze': [C.POINTER(CacheCapture), C.POINTER(Info), C.POINTER(Transfer)],
+            'kpd207_pps_freeze': [C.POINTER(ManualPps), C.POINTER(Transfer)],
         }.items():
             getattr(cls.dll, name).argtypes = types
         cls.dll.kpd207_info_records.restype = C.c_bool
         cls.dll.kpd207_info_freeze.restype = C.c_bool
+        cls.dll.kpd207_pps_freeze.restype = C.c_bool
         cls.dll.kpd207_info_waiting_epr.restype = C.c_bool
         cls.events = json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text())
 
@@ -223,6 +230,29 @@ class InfoTests(unittest.TestCase):
                 self.command('009400')
                 self.feed('8c a1 04 00 ff ff ff ff 00 00')
                 self.assertEqual(self.raw('pps_status'), (b'\xff' * 4, 'pass'))
+
+    def test_manual_pps_accepts_only_matching_sop_reply_after_witness(self):
+        self.info.attached = False
+        pps = self.info.manual_pps
+        pps.rdo, pps.stage = 0x2301FE3C, 2
+        reply = '8c a1 04 00 fe 00 00 02 00 00'
+        self.feed(reply)
+        self.assertEqual(pps.stage, 2)
+        self.feed('94 00', tx=True)
+        self.feed(reply, sop=1)
+        self.assertEqual(pps.stage, 3)
+        self.feed(reply)
+        frozen = Transfer()
+        self.assertTrue(self.dll.kpd207_pps_freeze(C.byref(pps), C.byref(frozen)))
+        decoded = transfer.unpack(bytes(frozen.binary[:frozen.length]))
+        self.assertEqual(decoded['origin'], 'km003c_pps')
+        field = decoded['fields']['pps_status']
+        self.assertEqual(field['status'], 'pass')
+        self.assertEqual(field['raw'], '3CFE0123FE000002')
+        self.assertEqual(field['decoded']['requested_mv'], 5100)
+        self.assertEqual(field['decoded']['requested_ma'], 3000)
+        self.assertEqual(field['decoded']['reported_mv'], 5080)
+        self.assertEqual(field['decoded']['reported_ma'], 0)
 
     def test_record_boundaries_and_maximum_extended_size(self):
         self.assertFalse(self.dll.kpd207_info_records(C.byref(self.info), (U8 * 1)(0xff), 1, 0))
