@@ -374,7 +374,7 @@ def main():
     cpu.mem_write(0x21002100 + 48 + 24, b'\x010x18000000\0')
     cpu.mem_write(0x21002100 + 4 * 48 + 24, b'\x010x00082650\0')
     call(symbols['kpd207_gui_tick'])
-    if cpu.mem_read(source + 2560, 1) != b'\0':
+    if cpu.mem_read(source + 2564, 1) != b'\0':
         raise AssertionError('A stale table in non-cable mode replaced the PD result')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(context, b'\x05')
@@ -416,12 +416,11 @@ def main():
         cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta)); call(symbols['kpd207_gui_tick'])
     if not cpu.mem_read(source + 56 + 179, 1)[0] & 4 or bytes(cpu.mem_read(source + 56 + 156, 8)) == bytes.fromhex(owned_id):
         raise AssertionError('Repeated native PD scan did not capture a fresh measurement ID')
-    # Match the slow source: SPR is stable when a native reset ends the extra
-    # requests. EPR becomes stable later in the same stock scan.
+    # Match the slow source: a reset occurs during SPR, before the first GET.
     log('8d 01')
     call(symbols['kpd207_gui_tick'])
-    if bytes(cpu.mem_read(source + 248 + 2152, 1)) != b'\x06':
-        raise AssertionError('Fixture did not stop information acquisition before EPR')
+    if bytes(cpu.mem_read(source + 248 + 2152, 1)) != b'\x07':
+        raise AssertionError('Reset during SPR did not return to waiting for EPR')
     buttons((20, 19), now + 4200); buttons((20, 19), now + 4950)
     call(symbols['kpd207_gui_tick']); buttons((), now + 4951)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
@@ -431,9 +430,19 @@ def main():
     cpu.mem_write(context + 0x3d5, b'\x08\x09\x0b')
     cpu.mem_write(context + 0xf0, spr)
     cpu.mem_write(context + 0xa8, epr)
-    for delta in (6000, 6020):
+    for delta in (6000, 6020, 6269):
         cpu.mem_write(0x1fffba20, struct.pack('<I', now + delta))
         call(symbols['kpd207_gui_tick'])
+        if cpu.mem_read(context + 0x27, 1)[0] & 5:
+            raise AssertionError('The first GET was enqueued before EPR settled')
+    cpu.mem_write(0x1fffba20, struct.pack('<I', now + 6270))
+    call(symbols['kpd207_gui_tick'])
+    if not cpu.mem_read(context + 0x27, 1)[0] & 5 or cpu.mem_read(context + 0x4c, 1)[0] & 31 != 24:
+        raise AssertionError('The first GET was not enqueued after stable EPR')
+    # Ending the native scan still exports the full PDO result.
+    cpu.mem_write(context, b'\x04')
+    cpu.mem_write(context + 0x29, b'\0')
+    call(symbols['kpd207_gui_tick'])
     frozen = late_data + 7212
     size = struct.unpack('<H', cpu.mem_read(frozen + 2668, 2))[0]
     result = transfer.unpack(bytes(cpu.mem_read(frozen, size)))
@@ -442,15 +451,15 @@ def main():
     cpu.mem_write(context, b'\x04')
     cpu.mem_write(context + 0x29, b'\0')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
-    buttons((20, 19), now + 6050); buttons((20, 19), now + 6800)
-    call(symbols['kpd207_gui_tick']); buttons((), now + 6801)
+    buttons((20, 19), now + 6300); buttons((20, 19), now + 7050)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 7051)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
     if transfer.unpack(bytes(cpu.mem_read(word(source + 8) + 7212, size))) != result:
         raise AssertionError('Late EPR or ID changed after the native scan ended')
     print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
     print('Standalone e-Marker: rejects zero and out-of-mode result tables; exports a stable independent two-page QR.')
     print('Native mode isolation: a subsequent PD scan rejects stale cache and obtains a fresh ID.')
-    print('Delayed EPR: wait on open, promote late capabilities, and preserve the complete QR after native scan exit.')
+    print('Delayed EPR: keep waiting through a pre-request reset, enqueue after stable EPR, and keep PDOs after exit.')
 
 
 if __name__ == '__main__':

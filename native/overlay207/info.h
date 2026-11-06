@@ -21,16 +21,21 @@ struct kpd207_info {
     struct kpd207_sample pdos;
     uint8_t id[8];
     bool frozen;
+    uint8_t settle_link;
+    uint32_t startup_since;
 };
 _Static_assert(sizeof(struct kpd207_info_field) == 268 && offsetof(struct kpd207_info, pdos) == 2192 &&
-               sizeof(struct kpd207_info) == 2280,
+               sizeof(struct kpd207_info) == 2284,
                "Information state ABI used by private inspectors");
 enum { KPD207_INFO_IDLE, KPD207_INFO_SETTLE, KPD207_INFO_COMMAND,
        KPD207_INFO_TX, KPD207_INFO_REPLY, KPD207_INFO_GUARD, KPD207_INFO_DONE,
        KPD207_INFO_WAIT_PDO };
+enum { KPD207_LINK_WAIT, KPD207_LINK_SPR, KPD207_LINK_EPR_PENDING, KPD207_LINK_EPR };
 void kpd207_info_begin(struct kpd207_info *);
 void kpd207_info_stop(struct kpd207_info *, uint8_t status);
-void kpd207_info_tick(struct kpd207_info *, bool ready, bool pps, uint32_t now);
+void kpd207_info_resettle(struct kpd207_info *, uint8_t status);
+uint8_t kpd207_info_link(const struct kpd207_capture *, uint8_t phase, bool native_epr);
+void kpd207_info_tick(struct kpd207_info *, uint8_t link, bool pps, uint32_t now);
 /* Native console's three-byte prefix (SOP + input PD header), then payload. */
 unsigned kpd207_info_command(const struct kpd207_info *, uint8_t out[7]);
 void kpd207_info_sent(struct kpd207_info *, uint32_t now);

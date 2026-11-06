@@ -28,7 +28,8 @@ class Info(C.Structure):
                 ('ring_ready', C.c_bool), ('attached', C.c_bool), ('pps', C.c_bool), ('started', C.c_bool),
                 ('tx_length', U8), ('tx_wire', U8 * 30), ('cable_emulation', U8),
                 ('pdos', CacheSample),
-                ('id', U8 * 8), ('frozen', C.c_bool)]
+                ('id', U8 * 8), ('frozen', C.c_bool), ('settle_link', U8),
+                ('startup_since', C.c_uint32)]
 
 
 def record(wire, sop=0, tx=False):
@@ -58,7 +59,7 @@ class InfoTests(unittest.TestCase):
         for name, types in {
             'kpd207_info_begin': [C.POINTER(Info)],
             'kpd207_info_stop': [C.POINTER(Info), U8],
-            'kpd207_info_tick': [C.POINTER(Info), C.c_bool, C.c_bool, C.c_uint32],
+            'kpd207_info_tick': [C.POINTER(Info), U8, C.c_bool, C.c_uint32],
             'kpd207_info_command': [C.POINTER(Info), C.POINTER(U8)],
             'kpd207_info_sent': [C.POINTER(Info), C.c_uint32],
             'kpd207_info_hold': [C.POINTER(Info), C.POINTER(CacheCapture), C.c_uint32],
@@ -86,9 +87,9 @@ class InfoTests(unittest.TestCase):
         self.now = 0
         self.dll.kpd207_info_begin(C.byref(self.info))
 
-    def tick(self, dt=0, ready=True, pps=False):
+    def tick(self, dt=0, ready=True, pps=False, link=None):
         self.now = (self.now + dt) & 0xffffffff
-        self.dll.kpd207_info_tick(C.byref(self.info), ready, pps, self.now)
+        self.dll.kpd207_info_tick(C.byref(self.info), int(ready) if link is None else link, pps, self.now)
 
     def feed(self, wire, sop=0, tx=False):
         raw = record(wire, sop, tx)
@@ -236,6 +237,32 @@ class InfoTests(unittest.TestCase):
             self.setUp(); self.tick(ready=ready_first); self.tick(6000, ready=False)
             self.assertEqual((self.info.stage, self.info.capture_status), (6, 2))
             self.assertTrue(all(f.status == 0 for f in self.info.fields))
+
+    def test_pending_epr_waits_and_a_pre_request_reset_restarts_settling(self):
+        self.tick(link=2)  # SPR advertises EPR.
+        self.tick(2100, link=2)
+        self.assertEqual(self.info.stage, 7)
+        self.tick(link=3)
+        self.tick(249, link=3)
+        self.feed('8d 01')
+        self.assertTrue(self.info.attached)
+        self.tick(link=3)
+        self.tick(249, link=3)
+        self.assertEqual(self.info.stage, 1)
+        self.tick(1, link=3)
+        self.command('009800')
+        self.event(9)
+        self.assertEqual(self.raw('revision')[1], 'pass')
+
+    def test_epr_advertisement_without_entry_falls_back_to_stable_spr(self):
+        self.tick(link=2)
+        self.tick(3999, link=2)
+        self.assertEqual(self.info.stage, 7)
+        self.tick(1, link=2)
+        self.tick(1999, link=2)
+        self.assertEqual(self.info.stage, 1)
+        self.tick(1, link=2)
+        self.command('009800')
 
     def test_manufacturer_tx_accepts_chunked_and_unchunked_target_ref_only(self):
         for ext in (2, 4, 0x8002, 0x8004, 0x8404, 0x8804, 0x8204):

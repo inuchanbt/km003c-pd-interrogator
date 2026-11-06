@@ -109,7 +109,7 @@ static void records(struct kpd207_info *i, uint32_t now) {
     unsigned delta = (uint16_t)(total - i->ring_total);
     if (!delta) return;
     if (delta > 320) {
-        kpd207_info_stop(i, KPD_INVALID);
+        kpd207_info_resettle(i, KPD_INVALID);
         i->ring_total = total; i->ring_position = position; return;
     }
     if ((i->ring_position + delta) % 320 != position) return; /* In-progress writer. */
@@ -141,7 +141,7 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
         i->cable_emulation = p[3] & 7;
     }
     records(i, now);
-    bool ready = phase == 0x24 && (c->flags & KPD207_CAPTURE_READY);
+    uint8_t link = kpd207_info_link(c, phase, (p[0x3d5] & 8) != 0);
     unsigned selected = p[3] >> 4;
     bool pps = false;
     if (selected && selected <= 11) {
@@ -149,11 +149,13 @@ void kpd207_information_tick(struct kpd207_info *i, const struct kpd207_capture 
         uint32_t pdo = (uint32_t)u16(raw) | (uint32_t)u16(raw + 2) << 16;
         pps = (pdo >> 28) == 12; /* Actual selected native PDO is PPS APDO. */
     }
-    kpd207_info_tick(i, ready, pps, now);
+    kpd207_info_tick(i, link, pps, now);
     /* Native reset may receive new SPR-only PDOs before it reaches idle.
      * Completed information keeps the PDOs and ID from completion time. */
     kpd207_info_hold(i, c, now);
-    if (!ready || i->stage != KPD207_INFO_COMMAND || (p[0x27] & 5)) return;
+    if (link == KPD207_LINK_EPR_PENDING) link = KPD207_LINK_SPR;
+    if (link != i->settle_link || i->stage != KPD207_INFO_COMMAND ||
+        p[0] != 0 || p[0x29] != 0x24 || (p[0x27] & 5)) return;
     uint8_t command[7];
     unsigned length = kpd207_info_command(i, command);
     if (!length) return;

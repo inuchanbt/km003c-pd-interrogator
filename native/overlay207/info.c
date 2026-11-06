@@ -6,6 +6,21 @@ static uint16_t u16(const uint8_t *p) { return (uint16_t)p[0] | (uint16_t)p[1] <
 static struct kpd207_info_field *field(struct kpd207_info *i, unsigned n) { return &i->fields[n - 2]; }
 static const uint8_t steps[] = {KPD_REVISION, KPD_SOURCE_CAP_EXT, KPD_SOURCE_STATUS,
     KPD_SOURCE_INFO, KPD_MANUFACTURER, KPD_SOURCE_IDENTITY, KPD_PPS_STATUS};
+enum { WAIT_READY_MS = 6000, WAIT_EPR_MS = 4000, SETTLE_SPR_MS = 2000, SETTLE_EPR_MS = 250 };
+
+static bool missing_epr(const struct kpd207_sample *p) {
+    if (p->epr_length || p->spr_length < 4) return false;
+    /* The first fixed 5 V Source PDO advertises EPR Mode Capable at bit 23. */
+    uint32_t first = u16(p->spr) | (uint32_t)u16(p->spr + 2) << 16;
+    return first >> 30 == 0 && ((first >> 10) & 1023) == 100 && (first & (1u << 23));
+}
+
+uint8_t kpd207_info_link(const struct kpd207_capture *c, uint8_t phase, bool native_epr) {
+    if (phase != 0x24 || !(c->flags & KPD207_CAPTURE_READY) ||
+        native_epr != (c->result.epr_length != 0)) return KPD207_LINK_WAIT;
+    if (native_epr) return KPD207_LINK_EPR;
+    return missing_epr(&c->result) ? KPD207_LINK_EPR_PENDING : KPD207_LINK_SPR;
+}
 
 void kpd207_info_begin(struct kpd207_info *i) {
     /* Ring cursors belong to the adapter, not the PD attachment lifecycle. */
@@ -37,16 +52,32 @@ static void select_step(struct kpd207_info *i, uint32_t now) {
     }
 }
 
-void kpd207_info_tick(struct kpd207_info *i, bool ready, bool pps, uint32_t now) {
+void kpd207_info_tick(struct kpd207_info *i, uint8_t link, bool pps, uint32_t now) {
     if (!i->attached || i->stage == KPD207_INFO_DONE) return;
-    if (i->stage == KPD207_INFO_IDLE) { i->stage = KPD207_INFO_WAIT_PDO; i->since = now; }
-    if (i->stage == KPD207_INFO_WAIT_PDO && ready) {
-        i->stage = KPD207_INFO_SETTLE; i->since = now; i->pps = pps;
-    } else if ((i->stage == KPD207_INFO_WAIT_PDO || i->stage == KPD207_INFO_SETTLE) &&
-               (uint32_t)(now - i->since) >= 6000 && !ready) {
-        i->stage = KPD207_INFO_DONE; i->capture_status = 2;
-    } else if (i->stage == KPD207_INFO_SETTLE && (uint32_t)(now - i->since) >= 2000) {
-        if (ready) select_step(i, now);
+    if (i->stage == KPD207_INFO_IDLE) {
+        i->stage = KPD207_INFO_WAIT_PDO;
+        i->startup_since = now;
+    }
+    uint32_t elapsed = now - i->startup_since;
+    /* Some SPR contracts advertise EPR without entering it. Allow a bounded
+     * fallback if the native policy remains in Ready with only SPR PDOs. */
+    if (link == KPD207_LINK_EPR_PENDING)
+        link = elapsed >= WAIT_EPR_MS ? KPD207_LINK_SPR : KPD207_LINK_WAIT;
+    if (!i->started && i->stage == KPD207_INFO_COMMAND && link != i->settle_link)
+        i->stage = KPD207_INFO_WAIT_PDO;
+    if (i->stage == KPD207_INFO_WAIT_PDO || i->stage == KPD207_INFO_SETTLE) {
+        if ((link == KPD207_LINK_WAIT && elapsed >= WAIT_READY_MS) ||
+            elapsed >= WAIT_READY_MS + SETTLE_SPR_MS) {
+            i->stage = KPD207_INFO_DONE; i->capture_status = 2;
+        } else if (link == KPD207_LINK_WAIT) {
+            i->stage = KPD207_INFO_WAIT_PDO;
+        } else if (i->stage == KPD207_INFO_WAIT_PDO || link != i->settle_link) {
+            i->stage = KPD207_INFO_SETTLE; i->since = now; i->settle_link = link;
+        } else if ((uint32_t)(now - i->since) >=
+                   (link == KPD207_LINK_EPR ? SETTLE_EPR_MS : SETTLE_SPR_MS)) {
+            i->pps = pps;
+            select_step(i, now);
+        }
     } else if (i->stage == KPD207_INFO_GUARD && (uint32_t)(now - i->since) >= 150) {
         ++i->step; select_step(i, now);
     } else if ((i->stage == KPD207_INFO_COMMAND || i->stage == KPD207_INFO_TX ||
@@ -58,6 +89,12 @@ void kpd207_info_tick(struct kpd207_info *i, bool ready, bool pps, uint32_t now)
         /* Stop issuing requests after loss of the native TX or response path. */
         i->capture_status = 2; i->stage = KPD207_INFO_DONE;
     }
+}
+
+void kpd207_info_resettle(struct kpd207_info *i, uint8_t status) {
+    if (!i->attached || i->stage == KPD207_INFO_DONE) return;
+    if (i->started) kpd207_info_stop(i, status);
+    else if (i->stage != KPD207_INFO_IDLE) i->stage = KPD207_INFO_WAIT_PDO;
 }
 
 static unsigned command(unsigned current, uint8_t out[7]) {
@@ -109,7 +146,7 @@ static void packet(struct kpd207_info *i, bool tx, uint8_t sop, const uint8_t *w
     if (n < 2 || sop > 1) return;
     uint16_t h = u16(w); unsigned count = (h >> 12) & 7, type = h & 31;
     if (n != 2 + count * 4) return;
-    if (sop == 0 && !count && type == 13) { kpd207_info_stop(i, KPD_RESET); return; }
+    if (sop == 0 && !count && type == 13) { kpd207_info_resettle(i, KPD_RESET); return; }
     const uint8_t *p = w + 2;
     if (tx) {
         if (sop == 1 && count == 1 && type == 15 && !(h & 0x8000) &&
@@ -193,19 +230,12 @@ bool kpd207_info_records(struct kpd207_info *i, const uint8_t *b, unsigned n, ui
             packet(i, (flag & 0x40) != 0, b[pos + 5], b + pos + 6, len - 6, now);
         else if ((flag == 5 || flag == 0x45) && len == 6) {
             uint8_t code = b[pos + 5];
-            if (code == 0x22 || code == 0x04 || code == 0x05)
-                kpd207_info_stop(i, KPD_RESET);
+            if (code == 0x22) kpd207_info_stop(i, KPD_RESET);
+            else if (code == 0x04 || code == 0x05) kpd207_info_resettle(i, KPD_RESET);
         } else return false;
         pos += len;
     }
     return true;
-}
-
-static bool missing_epr(const struct kpd207_sample *p) {
-    if (p->epr_length || p->spr_length < 4) return false;
-    /* The first fixed 5 V Source PDO advertises EPR Mode Capable at bit 23. */
-    uint32_t first = u16(p->spr) | (uint32_t)u16(p->spr + 2) << 16;
-    return first >> 30 == 0 && ((first >> 10) & 1023) == 100 && (first & (1u << 23));
 }
 
 void kpd207_info_hold(struct kpd207_info *i, const struct kpd207_capture *c, uint32_t now) {
