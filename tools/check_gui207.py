@@ -470,8 +470,22 @@ def main():
     cpu.mem_write(context + 0x4e, struct.pack('<H', 0x21a1))
     cpu.mem_write(context + 0xa8, struct.pack('<II', 0x0a11912c, 0xc9a43264))
     cpu.mem_write(context + 0x114, struct.pack('<II', 0x2301fe3c, 0x2301fe3c))
-    buttons((20, 19), now + 7100); buttons((20, 19), now + 7850)
-    call(symbols['kpd207_gui_tick']); buttons((), now + 7851)
+    if buttons((19,), now + 7080)[1] != 0 or buttons((), now + 7100) != (19, 1):
+        raise AssertionError('A short trigger arrow tap was not forwarded once')
+    if buttons((20,), now + 7120)[1] != 0:
+        raise AssertionError('The first PPS shortcut arrow leaked into the native slider')
+    if buttons((20, 19), now + 7200)[1] != 0:
+        raise AssertionError('The second PPS shortcut arrow leaked into the native slider')
+    # A native policy transition during the hold must not select the power QR.
+    cpu.mem_write(context + 0x29, b'\x23')
+    buttons((20, 19), now + 7950)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 7951)
+    call(symbols['kpd207_gui_tick'])
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    if word(source + 4) != 5768 or cpu.mem_read(context + 0x27, 1)[0] & 5:
+        raise AssertionError('Manual PPS did not wait for the native policy on the compact screen')
+    cpu.mem_write(context + 0x29, b'\x24')
+    call(symbols['kpd207_gui_tick'])
     call(symbols['kpd207_gui_tick'])
     if cpu.mem_read(context + 0x4c, 1)[0] & 31 != 20 or not cpu.mem_read(context + 0x27, 1)[0] & 5:
         raise AssertionError('Manual PPS did not enqueue Get_PPS_Status')
@@ -497,6 +511,43 @@ def main():
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     if word(input_device + 0x5c) != original_group:
         raise AssertionError('Manual PPS Exit did not restore the trigger group')
+    # On the device the focused stock slider and range outlive the PD cache.
+    modal, modal_ext, focus_link, slider, owner, settings, label = (
+        0x21001000 + i * 0x100 for i in range(7))
+    old_modal = word(0x1fffacd8)
+    old_focus = word(original_group + 0xc)
+    for addr, value in ((0x1fffacd8, modal), (modal + 0x1c, 0x3c9f9), (modal + 0x24, modal_ext),
+                        (modal_ext + 0x10, 0x3f0d5), (original_group + 0xc, focus_link),
+                        (focus_link, slider), (slider + 0x18, 0x1b51b), (slider + 0x4c, owner),
+                        (owner + 4, settings), (settings + 8, label)):
+        cpu.mem_write(addr, struct.pack('<I', value))
+    cpu.mem_write(context + 0x27, b'\0')
+    cpu.mem_write(context + 3, b'\x62')
+    cpu.mem_write(context + 0x29, b'\x1e')
+    cpu.mem_write(context + 0x4e, bytes(2))
+    cpu.mem_write(context + 0xa8, bytes(28))
+    cpu.mem_write(context + 0x114, bytes(8))
+    for tick, avs in ((7960, b'15.00-48.00V240W\0'), (7980, b'9-20V3.00A,5.00A\0')):
+        cpu.mem_write(label, avs)
+        if buttons((19,), now + tick) != (19, 1):
+            raise AssertionError('An AVS slider tap was mistaken for PPS')
+        buttons((), now + tick + 1)
+    cpu.mem_write(label, b'5.00-21.00V 5.00A\0')
+    buttons((20, 19), now + 8000); buttons((20, 19), now + 8750)
+    call(symbols['kpd207_gui_tick']); buttons((), now + 8751)
+    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
+    if word(source + 4) != 5768:
+        raise AssertionError('Focused PPS slider with an empty cache did not open the compact screen')
+    pixels = word(source + 8)
+    waiting_image = bytes(cpu.mem_read(pixels, 5768))
+    buttons((), now + 11250); call(symbols['kpd207_gui_tick'])
+    if bytes(cpu.mem_read(pixels, 5768)) == waiting_image or cpu.mem_read(context + 0x27, 1)[0] & 5:
+        raise AssertionError('Unsettled PPS did not reach the no-contract screen without sending')
+    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
+    if word(input_device + 0x5c) != original_group:
+        raise AssertionError('No-contract PPS screen did not restore the trigger group')
+    cpu.mem_write(original_group + 0xc, struct.pack('<I', old_focus))
+    cpu.mem_write(0x1fffacd8, struct.pack('<I', old_modal))
     call(0x32b80, blocker)
     print('Native GUI information: waiting screen, six native requests, five-page completion, retained ID, Exit and reopen passed.')
     print('Standalone e-Marker: rejects zero and out-of-mode result tables; exports a stable independent two-page QR.')

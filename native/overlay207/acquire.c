@@ -65,6 +65,17 @@ static uint32_t u32(volatile const uint8_t *p) {
     return u16(p) | (uint32_t)u16(p + 2) << 16;
 }
 
+bool kpd207_pps_selected(void) {
+    volatile const uint8_t *p = (volatile const uint8_t *)0x20000004u;
+    unsigned selected = p[3] >> 4;
+    if (p[0] != 0 || !selected || selected > 7) return false;
+    /* The original SPR list moves to +0xf0 while the native policy is in EPR. */
+    bool epr = (p[0x3d5] & 8) != 0;
+    uint16_t header = u16(p + (epr ? 0x10c : 0x4e));
+    return (header & 0x801f) == 1 && selected <= (header >> 12 & 7) &&
+        u32(p + (epr ? 0xf0 : 0xa8) + (selected - 1) * 4) >> 28 == 12;
+}
+
 /* The native Request path copies the wire RDO to +0x118. +0x114 is
  * the target RDO, which can change before the policy engine sends it. */
 uint32_t kpd207_pps_contract(void) {

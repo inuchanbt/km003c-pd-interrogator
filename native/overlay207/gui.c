@@ -25,6 +25,7 @@
 #define group_create FN(0x2f218, void *, void)
 #define group_delete FN(0x2f250, void, void *)
 #define group_add FN(0x2f1c0, void, void *, void *)
+#define group_focused FN(0x2f384, const uint8_t *, void *)
 #define indev_next FN(0x30ab4, void *, void *)
 #define indev_set_group FN(0x30c9c, void, void *, void *)
 #define tick_get FN(0x3c0d0, uint32_t, void)
@@ -57,6 +58,11 @@ struct screen_state {
     struct kpd207_info info;
     struct cable_result cable;
     bool prefer_cable;
+    uint8_t pps_arrow;
+    bool pps_arrow_forwarded;
+    bool pps_chord, pps_waiting, pps_unavailable;
+    uint32_t pps_arrow_since;
+    uint32_t pps_wait_since;
 };
 _Static_assert(sizeof(struct image_descriptor) == 12, "ARM32 image descriptor");
 _Static_assert(offsetof(struct screen_state, capture) == 56 &&
@@ -74,6 +80,66 @@ static struct screen_state *find_state(void *layer) {
     return NULL;
 }
 
+static bool pps_trigger_focused(const struct screen_state *s) {
+    void *modal = stock_modal();
+    if (!modal || (uintptr_t)obj_signal(modal) != 0x3c9f9u) return false;
+    const uint8_t *ext = obj_ext(modal);
+    if (!ext || *(const uint32_t *)(ext + 0x10) != 0x3f0d5u) return false;
+    const uint8_t *focus = group_focused(*(void **)((uint8_t *)s->input + 0x5c));
+    if (!focus) return false;
+    uint32_t event = *(const uint32_t *)(focus + 0x18);
+    if (event != 0x1b51bu && event != 0x1b381u) return false; /* Slider or its Back button. */
+    const uint8_t *owner = *(const uint8_t *const *)(focus + 0x4c);
+    if (!owner) return false;
+    const uint8_t *settings = *(const uint8_t *const *)(owner + 4);
+    if (!settings) return false;
+    const char *range = *(const char *const *)(settings + 8);
+    /* Stock PPS has a decimal minimum and an ampere limit. SPR AVS uses
+     * integer minima and EPR AVS uses watts. The label survives PD resets. */
+    if (!range || range[0] < '0' || range[0] > '9' || !range[1] ||
+        (range[1] != '.' && range[2] != '.')) return false;
+    for (unsigned n = 0; n < 32 && range[n]; ++n)
+        if (range[n] == 'A') return true;
+    return false;
+}
+
+static bool wants_pps(const struct screen_state *s) {
+    return kpd207_pps_selected() || pps_trigger_focused(s);
+}
+
+static void defer_pps_arrow(struct screen_state *s, void *data, bool left_up, bool right_up,
+                            uint32_t now) {
+    uint8_t *pressed = (uint8_t *)data + 14;
+    uint32_t *key = (uint32_t *)((uint8_t *)data + 4);
+    if (left_up && right_up) {
+        /* A short single tap still gets one press on release. */
+        if (s->pps_arrow && !s->pps_arrow_forwarded && !*pressed) {
+            *key = s->pps_arrow;
+            *pressed = 1;
+        }
+        s->pps_arrow = 0;
+        return;
+    }
+    if (*pressed && *key != 19 && *key != 20) {
+        s->pps_arrow = 0;
+        return;
+    }
+    uint8_t arrow = left_up ? 19 : 20;
+    if (s->pps_arrow != arrow) {
+        if (!*pressed || !wants_pps(s)) {
+            s->pps_arrow = 0;
+            return;
+        }
+        s->pps_arrow = arrow;
+        s->pps_arrow_since = now;
+        s->pps_arrow_forwarded = false;
+    }
+    /* LVGL can immediately act on the first arrow in the trigger slider.
+     * Give the second arrow time to arrive before forwarding that press. */
+    if ((uint32_t)(now - s->pps_arrow_since) < 150) *pressed = 0;
+    else if (*pressed) s->pps_arrow_forwarded = true;
+}
+
 static bool keypad_read(void *driver, void *data) {
     struct screen_state *s = find_state(sys_layer(NULL));
     keypad_cb original = (keypad_cb)(uintptr_t)STOCK_KEYPAD_READ;
@@ -85,20 +151,23 @@ static bool keypad_read(void *driver, void *data) {
      * No pin configuration, native user_data, or original key mapping changes. */
     bool left_up = *(volatile const uint32_t *)0x42a70220u != 0;
     bool right_up = *(volatile const uint32_t *)0x42a70224u != 0;
+    uint32_t now = tick_get();
     if (!s->data && !left_up && !right_up && !s->chord) {
         s->chord = true;
         s->chord_fired = false;
-        s->chord_since = tick_get();
+        s->chord_since = now;
+        s->pps_chord = s->pps_arrow != 0 || wants_pps(s);
+        s->pps_arrow = 0;
     }
     if (s->chord) {
         if (!left_up && !right_up && !s->chord_fired &&
-            (uint32_t)(tick_get() - s->chord_since) >= 750) {
+            (uint32_t)(now - s->chord_since) >= 750) {
             s->pending = 4;
             s->chord_fired = true;
         }
         ((uint8_t *)data)[14] = 0; /* Native lv_indev_data_t.state = released */
         if (left_up && right_up) s->chord = false;
-    }
+    } else if (!s->data) defer_pps_arrow(s, data, left_up, right_up, now);
     return more;
 }
 
@@ -163,9 +232,11 @@ static bool render(struct screen_state *s, uint32_t now) {
         bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
         bool pps = s->origin == KPD_KM003C_PPS;
         bool epr = !s->origin && kpd207_info_waiting_epr(&s->info, &s->capture, now);
-        text(s, pps ? "READING PPS" : epr ? "READING EPR" : reading ? "READING PD" :
+        text(s, pps ? (s->pps_unavailable ? "NO PPS" : "READING PPS") :
+            epr ? "READING EPR" : reading ? "READING PD" :
             s->random.phase == 3 ? "ID ERROR" : "NO DATA", 32, 80, 4);
-        text(s, reading || epr || pps ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
+        text(s, pps && s->pps_unavailable ? "SET PPS" :
+            reading || epr || pps ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
         text(s, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
@@ -300,7 +371,8 @@ static bool freeze_compact(struct screen_state *s) {
 }
 
 static bool freeze_result(struct screen_state *s, uint32_t now) {
-    if (s->origin == KPD_KM003C_PPS) return freeze_compact(s);
+    if (s->origin == KPD_KM003C_PPS)
+        return !s->pps_waiting && !s->pps_unavailable && freeze_compact(s);
     if (s->info.attached && s->info.stage != KPD207_INFO_DONE) return false;
     if (s->origin == KPD_KM003C_CABLE) {
         if (!s->prefer_cable || (cable_mode() && !s->cable.saved)) return false;
@@ -313,19 +385,43 @@ static bool freeze_result(struct screen_state *s, uint32_t now) {
     return true;
 }
 
+static void start_pps(struct screen_state *s, uint32_t now) {
+    struct kpd207_pps *manual = &s->info.manual_pps;
+    if (manual->stage != KPD207_PPS_IDLE && manual->stage != KPD207_PPS_DONE) {
+        /* A previous opening can still have a request in flight. */
+        s->pps_waiting = false;
+        return;
+    }
+    uint32_t rdo = kpd207_pps_contract();
+    if (rdo && kpd207_capture_take_id(&s->capture, manual->id)) {
+        manual->rdo = rdo;
+        manual->since = now;
+        manual->stage = KPD207_PPS_COMMAND;
+        s->pps_waiting = false;
+    } else if ((uint32_t)(now - s->pps_wait_since) >= 2500) {
+        s->pps_waiting = false;
+        s->pps_unavailable = true;
+        if (render(s, now)) obj_invalidate(s->image);
+        else close_screen(s);
+    }
+}
+
 static void open_result(struct screen_state *s, void *layer, uint32_t now) {
     if (!s->input) return;
     s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
-    uint32_t rdo = kpd207_pps_contract();
-    s->origin = rdo ? KPD_KM003C_PPS :
+    bool pps = s->pps_chord || wants_pps(s);
+    s->origin = pps ? KPD_KM003C_PPS :
         (cable_mode() || (s->prefer_cable && !s->info.attached)) ? KPD_KM003C_CABLE : KPD_KM003C;
     s->data = mem_alloc(image_size(s) + 4 + (s->origin ? 2 * sizeof(page_url) : sizeof(struct kpd_transfer)));
     if (!s->data) return;
     memset(s->data + image_size(s), 0, 4);
     s->page = 1;
     s->pages = 0;
+    s->pps_waiting = pps;
+    s->pps_unavailable = false;
+    s->pps_wait_since = now;
     if (!s->origin) memset(screen_payload(s), 0, sizeof(struct kpd_transfer));
-    if (!rdo) (void)freeze_result(s, now);
+    if (!pps) (void)freeze_result(s, now);
     if (!render(s, now)) goto failed;
     s->descriptor.header = 7u | (IMAGE_WIDTH << 10) | (image_height(s) << 21); /* INDEXED_1BIT */
     s->descriptor.size = image_size(s);
@@ -339,15 +435,7 @@ static void open_result(struct screen_state *s, void *layer, uint32_t now) {
     obj_set_signal(s->image, image_signal);
     group_add(s->group, s->image);
     indev_set_group(s->input, s->group);
-    if (rdo) {
-        struct kpd207_pps *manual = &s->info.manual_pps;
-        if (manual->stage == KPD207_PPS_IDLE || manual->stage == KPD207_PPS_DONE) {
-            if (!kpd207_capture_take_id(&s->capture, manual->id)) goto failed;
-            manual->rdo = rdo;
-            manual->since = now;
-            manual->stage = KPD207_PPS_COMMAND;
-        }
-    }
+    if (pps) start_pps(s, now);
     return;
 failed:
     close_screen(s);
@@ -382,6 +470,7 @@ void kpd207_gui_screen_tick(void) {
     kpd207_information_tick(&s->info, &s->capture, now);
     if (!held && s->info.frozen) s->prefer_cable = false;
     observe_cable(s);
+    if (s->data && s->pps_waiting) start_pps(s, now);
     if (s->data && !s->pages && freeze_result(s, now)) {
         if (render(s, now)) obj_invalidate(s->image);
         else close_screen(s);
