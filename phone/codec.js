@@ -37,7 +37,29 @@
     if(btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')!==encoded) throw Error('ページの文字列が正規形式ではありません');
     return {id,index,total,crc,bytes,text,key:`${id}:${total}:${crc}`};
   }
-  function describe(name, bytes) {
+  function decodeCable(words, origin) {
+    const headerless=origin==='km003c_cable' && words.length===4;
+    if(!headerless && (words.length<5 || words.length>7 ||
+        ((words[0]&0xFFFF87DF)>>>0)!==0xFF008041))return null;
+    const major=headerless?1:(words[0]>>>13)&3;
+    const offset=headerless?0:1;
+    const [ident,,product,vdo]=words.slice(offset,offset+4);
+    const kind={3:'passive',4:'active'}[(ident>>>27)&7];
+    if(!kind || !vdo || major>1)return null;
+    const legacy=major===0,version=legacy?null:(vdo>>>21)&7;
+    if(!legacy && !(kind==='passive'?[0]:[1,2,3]).includes(version))return null;
+    const vbus=kind==='passive' || !!(vdo&0x10);
+    const voltageCode=legacy?null:(vdo>>>9)&3;
+    const voltage=legacy || !vbus?null:voltageCode===3?50000:20000;
+    const currentCode=(vdo>>>5)&3,current=vbus?([null,3000,5000,null][currentCode]):null;
+    const epr=!legacy && (vdo&0x20000)?(voltage===50000 && current===5000?true:null):false;
+    const idHex=value=>value.toString(16).toUpperCase().padStart(4,'0');
+    return {kind,vid:idHex(ident&65535),pid:idHex(product>>>16),
+      layout:headerless?'pd3_assumed':legacy?'pd2':'pd3',vdo_version_code:version,
+      vbus_through:vbus,max_vbus_mv:voltage,voltage_code:voltageCode,
+      current_code:currentCode,current_ma:current,epr_capable:epr,speed_code:vdo&7};
+  }
+  function describe(name, bytes, origin) {
     const v = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
     const u16 = i=>v.getUint16(i,true), u32=i=>v.getUint32(i,true);
     if (['spr_pdos','epr_pdos'].includes(name)) {
@@ -64,8 +86,11 @@
     if(name==='manufacturer' && bytes.length>=4) return {vid:u16(0).toString(16).toUpperCase().padStart(4,'0'),pid:u16(2).toString(16).toUpperCase().padStart(4,'0'),name:new TextDecoder().decode(bytes.slice(4)).split('\0',1)[0].replace(/ +$/,'')};
     if(['cable_identity','source_identity'].includes(name)) {
       if(bytes.length%4) throw Error('VDOの長さが不正です');
-      const vdos=[]; for(let i=0;i<bytes.length;i+=4) vdos.push(u32(i).toString(16).toUpperCase().padStart(8,'0'));
-      return {vdos};
+      const words=[]; for(let i=0;i<bytes.length;i+=4) words.push(u32(i));
+      const result={vdos:words.map(word=>word.toString(16).toUpperCase().padStart(8,'0'))};
+      const cable=name==='cable_identity' && decodeCable(words,origin);
+      if(cable)result.cable=cable;
+      return result;
     }
     return null;
   }
@@ -78,7 +103,7 @@
       const tag=bytes[pos],state=bytes[pos+1],present=bytes[pos+2],length=v.getUint16(pos+3,true);pos+=5;
       if(tag<1||tag>fields.length||seen.has(tag)||state>=states.length||present>1||length>260||(!present&&length)||pos+length>bytes.length) throw Error('データ項目が不正です');
       seen.add(tag);const name=fields[tag-1],field={status:states[state]},raw=bytes.slice(pos,pos+length);pos+=length;
-      if(present) {field.raw=hex(raw);const decoded=describe(name,raw);if(decoded!==null) field.decoded=decoded;}
+      if(present) {field.raw=hex(raw);const decoded=describe(name,raw,result.origin);if(decoded!==null) field.decoded=decoded;}
       result.fields[name]=field;
     }
     if(seen.size!==fields.length) throw Error('データ項目が不足しています');
@@ -115,7 +140,26 @@
     }
     return `${p.index}: ${p.kind} ${p.raw}`;
   }
-  const api={parsePage,assemble,unpack,crc32,formatPDO};
+  function formatCable(cable) {
+    const {kind,vid,pid,layout,vbus_through,max_vbus_mv,voltage_code,
+      current_ma,current_code,epr_capable,speed_code}=cable;
+    const voltage=max_vbus_mv===null?'不明':`${max_vbus_mv/1000} V${voltage_code===1||voltage_code===2?'（旧コード）':''}`;
+    const current=current_ma!==null?`${current_ma/1000} A`:
+      kind==='active' && current_code===0?'USB既定電流':'不明';
+    const epr=epr_capable===null?'判定不可（VDOの値が不整合）':epr_capable?'対応':'非対応';
+    const speeds=layout==='pd2'?['USB 2.0のみ','USB 3.1 Gen 1','USB 3.1 Gen 2']:
+      ['USB 2.0のみ','USB 3.2 Gen 1','USB 3.2 / USB4 Gen 2','USB4 Gen 3','USB4 Gen 4'];
+    const rows=[
+      kind==='passive'?'パッシブケーブル':'アクティブケーブル',
+      `VID ${vid} / PID ${pid}`,
+      ...(vbus_through?[`VBUS定格 ${voltage}`,`対応電流 ${current}`]:['VBUS配線なし']),
+      `EPR ${epr}`,
+      `USB速度区分 ${speeds[speed_code]??'不明'}`,
+    ];
+    if(layout==='pd3_assumed')rows.push('純正画面のVDOをPD 3.x形式として解釈');
+    return rows.join('\n');
+  }
+  const api={parsePage,assemble,unpack,crc32,formatPDO,formatCable};
   if(typeof module!=='undefined' && module.exports) module.exports=api;
   root.KPD=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

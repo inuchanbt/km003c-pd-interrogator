@@ -72,6 +72,10 @@ raw_presentは0/1。0のときlengthは0。1かつlength=0は空の生データ�
 | 9 | cable_identity | SOP′ Identity ACKのVDO列。通常はVDMヘッダーを含む。KM003C単独ケーブル測定は純正画面のIdHead、CertStat、Product、Cableの4語 |
 | 10 | source_identity | VDMヘッダーを含むSOP Identity ACKのVDO列 |
 
+ケーブルIdentityのデコード結果は、既存のVDOから取込時に計算します。単独ケーブル測定の4語は
+VDMヘッダーがないため、PD 3.x形式として解釈したことを画面に表示します。
+VBUS定格、電流、EPR対応、USB速度区分を表示し、VDOの生値も保持します。
+
 statusは順に0=not_requested, 1=pass, 2=observed, 3=unsupported,
 4=no_response, 5=tx_failed, 6=rejected, 7=busy, 8=reset, 9=invalid,
 10=partial, 11=unknown, 12=emulation_enabled。

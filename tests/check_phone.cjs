@@ -39,6 +39,25 @@ second.add(input.vectors[0].pages);assert.equal(second.list().length,2);
 second.select(KPD.parsePage(vector.url_pages[0]).key);assert.deepEqual(second.current().snapshot.fields,vector.snapshot.fields);
 second.clear();assert.equal(second.current().received,0);assert.equal(second.list().length,1);
 const cable=input.vectors.find(v=>v.snapshot.origin==='km003c_cable');
+function cableOf(id){
+  const measurementId=id.toString(16).padStart(16,'0');
+  const vector=input.vectors.find(v=>v.snapshot.measurement_id===measurementId);
+  return KPD.assemble(vector.pages).snapshot.fields.cable_identity.decoded.cable;
+}
+const standalone=KPD.assemble(cable.url_pages).snapshot.fields.cable_identity.decoded.cable;
+assert.deepEqual([standalone.max_vbus_mv,standalone.current_ma,standalone.epr_capable,standalone.speed_code],[50000,5000,false,0]);
+for(const label of ['VBUS定格 50 V','対応電流 5 A','EPR 非対応','USB速度区分 USB 2.0のみ'])assert.ok(KPD.formatCable(standalone).includes(label));
+assert.equal(cableOf(9).epr_capable,true);
+assert.match(KPD.formatCable(cableOf(9)),/USB4 Gen 4/);
+assert.deepEqual([cableOf(10).max_vbus_mv,cableOf(10).epr_capable],[null,false]);
+assert.match(KPD.formatCable(cableOf(10)),/USB 3.1 Gen 2/);
+assert.deepEqual([cableOf(11).vbus_through,cableOf(11).current_ma],[false,null]);
+assert.match(KPD.formatCable(cableOf(11)),/VBUS配線なし/);
+assert.deepEqual([cableOf(12).voltage_code,cableOf(12).max_vbus_mv],[1,20000]);
+assert.match(KPD.formatCable(cableOf(13)),/EPR 判定不可.*\nUSB速度区分 不明/);
+assert.equal(cableOf(14),undefined);
+assert.equal(cableOf(15),undefined);
+assert.equal(cableOf(16).epr_capable,true);
 second.add(cable.url_pages);second.add(vector.url_pages);
 const mixedHistory=new Store(storage);
 for(const item of [cable,vector]){

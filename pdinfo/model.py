@@ -25,7 +25,41 @@ def words(raw):
     return list(struct.unpack('<' + 'I' * (len(raw) // 4), raw))
 
 
-def decode(name, raw):
+def decode_cable(vdos, origin):
+    """Decode Cable VDO 1 from a Discover Identity ACK or KM003C's result table."""
+    headerless = origin == 'km003c_cable' and len(vdos) == 4
+    if headerless:
+        ident, _, product, cable = vdos
+        major = 1
+    elif 5 <= len(vdos) <= 7 and vdos[0] & 0xFFFF87DF == 0xFF008041:
+        _, ident, _, product, cable, *_ = vdos
+        major = vdos[0] >> 13 & 3
+    else:
+        return None
+    kind = {3: 'passive', 4: 'active'}.get(ident >> 27 & 7)
+    if not kind or not cable or major > 1:
+        return None
+    legacy = major == 0
+    version = None if legacy else cable >> 21 & 7
+    if not legacy and version not in ((0,) if kind == 'passive' else (1, 2, 3)):
+        return None
+    vbus = kind == 'passive' or bool(cable & 0x10)
+    voltage_code = None if legacy else cable >> 9 & 3
+    # PD 3.x treats the retired 30/40 V encodings as 20 V.
+    voltage = None if legacy or not vbus else (50000 if voltage_code == 3 else 20000)
+    current_code = cable >> 5 & 3
+    current = {1: 3000, 2: 5000}.get(current_code) if vbus else None
+    epr = False
+    if not legacy and cable & 0x20000:
+        epr = True if voltage == 50000 and current == 5000 else None
+    return dict(kind=kind, vid=f'{ident & 65535:04X}', pid=f'{product >> 16:04X}',
+                layout='pd3_assumed' if headerless else 'pd2' if legacy else 'pd3',
+                vdo_version_code=version, vbus_through=vbus, max_vbus_mv=voltage,
+                voltage_code=voltage_code, current_code=current_code, current_ma=current,
+                epr_capable=epr, speed_code=cable & 7)
+
+
+def decode(name, raw, origin=None):
     """Only confirmed layouts; unknown/reserved values remain raw."""
     if name in ('spr_pdos', 'epr_pdos'):
         result = []
@@ -72,7 +106,12 @@ def decode(name, raw):
                     name=raw[4:].split(b'\0', 1)[0].decode('utf-8', errors='replace').rstrip(' '))
     if name in ('cable_identity', 'source_identity'):
         vdos = words(raw)
-        return dict(vdos=[f'{v:08X}' for v in vdos])
+        result = dict(vdos=[f'{v:08X}' for v in vdos])
+        if name == 'cable_identity':
+            cable = decode_cable(vdos, origin)
+            if cable is not None:
+                result['cable'] = cable
+        return result
     # Status/PPS Status stay raw until unknown-value semantics are implemented.
     return None
 
@@ -85,7 +124,7 @@ def set_field(snapshot, name, status, raw=None):
         if len(raw) > 260:
             raise ValueError('Field exceeds PD extended data limit')
         field['raw'] = raw.hex().upper()
-        value = decode(name, raw)
+        value = decode(name, raw, snapshot['origin'])
         if value is not None:
             field['decoded'] = value
     snapshot['fields'][name] = field

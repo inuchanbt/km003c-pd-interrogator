@@ -308,8 +308,25 @@ class PhoneTests(unittest.TestCase):
         cable=model.new_snapshot('km003c_cable','0000000000000008')
         cable['capture_status']='completed'
         model.set_field(cable,'cable_identity','observed',struct.pack('<4I',0x18000000,0,0,0x00082650))
-        vectors.append(dict(snapshot=cable,pages=transfer.encode_pages(cable),
-                            url_pages=transfer.encode_pages(cable,base_url=transfer.DEFAULT_IMPORT_URL)))
+        cable_vector=dict(snapshot=cable,pages=transfer.encode_pages(cable),
+                          url_pages=transfer.encode_pages(cable,base_url=transfer.DEFAULT_IMPORT_URL))
+        vectors.append(cable_vector)
+        # Passive EPR, legacy directional bits, active without VBUS, deprecated voltage,
+        # contradictory EPR and reserved speed, and an unknown VDO version.
+        for identifier, header, identity, vdo in (
+            (9, 0xff00a841, 0x18001234, 0x000a2644),
+            (10, 0xff008041, 0x18001234, 0x00082652),
+            (11, 0xff00a841, 0x20001234, 0x00683643),
+            (12, 0xff00a841, 0x18001234, 0x00082222),
+            (13, 0xff00a841, 0x18001234, 0x000a2627),
+            (14, 0xff00a841, 0x18001234, 0x00e82650),
+            (15, 0xff00a801, 0x18001234, 0x000a2644),
+            (16, 0xff00a841, 0x20001234, 0x006a3653),
+        ):
+            snap=model.new_snapshot('ch32h417',f'{identifier:016x}')
+            model.set_field(snap,'cable_identity','observed',struct.pack('<5I',header,identity,0,0x12340000,vdo))
+            vectors.append(dict(snapshot=snap,pages=transfer.encode_pages(snap),
+                                url_pages=transfer.encode_pages(snap,base_url=transfer.DEFAULT_IMPORT_URL)))
         actual=model.new_snapshot('km003c','0000000000000006')
         actual['capture_status']='imported'
         collector=Collector(actual)
@@ -318,7 +335,7 @@ class PhoneTests(unittest.TestCase):
                             url_pages=transfer.encode_pages(actual,base_url=transfer.DEFAULT_IMPORT_URL)))
         images=[]
         with tempfile.TemporaryDirectory(dir=ROOT/'artifacts') as folder:
-            for vector in vectors[-2:]:
+            for vector in (cable_vector, vectors[-1]):
                 path=Path(folder)/vector['snapshot']['origin']
                 transfer.write_qr(vector['url_pages'],path)
                 for i,text in enumerate(vector['url_pages'],1):

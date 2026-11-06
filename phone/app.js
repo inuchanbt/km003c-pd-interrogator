@@ -46,18 +46,17 @@ function render(){
       else if(name==='source_info')text=`報告 ${d.port_reported_pdp_w} W / 現在 ${d.port_present_pdp_w} W / 最大 ${d.port_maximum_pdp_w} W`;
       else if(name==='source_cap_ext')text=`VID ${d.vid} / PID ${d.pid}\nSPR ${d.spr_pdp_w} W${d.epr_pdp_w===null?'':` / EPR ${d.epr_pdp_w} W`}`;
       else if(name==='manufacturer')text=d.name||`名称は空欄 / VID ${d.vid} / PID ${d.pid}`;
-      else if(cable){
-        const labels=['IDヘッダー','認証情報','製品情報','ケーブルVDO'];
-        const header=d.vdos.length>=5;
-        if(header)labels.unshift('VDMヘッダー');
-        const id=d.vdos[header?1:0],product=d.vdos[header?3:2];
-        const type=(parseInt(id,16)>>>27)&7;
-        const summary=type===3?'パッシブケーブル':type===4?'アクティブケーブル':'USB-Cケーブル';
-        const detail=d.vdos.map((vdo,index)=>`${labels[index]||'追加VDO'}  0x${vdo}`).join('\n');
-        text=d.vdos.length>=4?`${summary}\nVID ${id.slice(-4)} / PID ${product.slice(0,4)}\n${detail}`:detail;
+      else if(name==='cable_identity'){
+        text=d.cable?KPD.formatCable(d.cable):`${d.vdos.length} VDOを保存（ケーブルの仕様は不明）`;
+        if(cable){
+          const labels=['IDヘッダー','認証情報','製品情報','ケーブルVDO'];
+          if(d.vdos.length>=5)labels.unshift('VDMヘッダー');
+          const detail=d.vdos.map((vdo,index)=>`${labels[index]||'追加VDO'}  0x${vdo}`).join('\n');
+          if(detail)text+=`\n\n${detail}`;
+        }
       }
       else text=`${d.vdos.length} VDOを保存`;
-      text+=`\n${statuses[field.status]}`;
+      text=field.status==='emulation_enabled'?`${statuses[field.status]}\n${text}`:`${text}\n${statuses[field.status]}`;
     }else if(field.raw)text+=`\n${field.raw}`;
     td.textContent=text;td.style.whiteSpace='pre-line';tr.append(th,td);$('rows').append(tr);
   }
