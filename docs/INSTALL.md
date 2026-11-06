@@ -20,7 +20,7 @@ Extract the ZIP and open PowerShell in its folder. Connect the side HID port nor
 .\km003c-backup.exe inspect
 ```
 
-Check for KM003C, HW 2.3, and firmware 2.0.7. Take note of the serial number for your next command. The tools perform exact app and loader checks before installation. Stop if a command fails. The `backup`, `candidate`, `recovery`, and log directories below must be new when created. Keep the backup and recovery files private.
+Check for KM003C, HW 2.3, and firmware 2.0.7. Take note of the serial number for your next command. The tools check both SHA-256 digests before installation. See the supported [application digest](STOCK-207.md) and [bootloader digest](OVERLAY-207.md). Stop if a command fails. The `backup`, `candidate`, `recovery`, and log directories below must be new when created. Keep the backup and recovery files private.
 
 ## 2. Qualify your own stock backup
 

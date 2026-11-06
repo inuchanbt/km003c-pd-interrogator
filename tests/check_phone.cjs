@@ -25,8 +25,8 @@ for(const vector of input.vectors){
   assert.equal(result.snapshot.origin,vector.snapshot.origin);
   assert.deepEqual(KPD.assemble(vector.url_pages).snapshot.fields,vector.snapshot.fields);
   if(vector.pages.length>1)assert.equal(KPD.assemble(vector.pages.slice(1)).snapshot,null);
-  const parts=vector.pages[0].split(':');parts[4]=parts[4].slice(0,-1)+(parts[4].endsWith('A')?'B':'A');
-  assert.throws(()=>KPD.assemble([parts.join(':'),...vector.pages.slice(1)]));
+  const parts=vector.pages[0].split(':');parts[4]=(parts[4].startsWith('A')?'B':'A')+parts[4].slice(1);
+  assert.throws(()=>KPD.assemble([parts.join(':'),...vector.pages.slice(1)]),/checksum does not match/);
 }
 assert.throws(()=>KPD.assemble([input.vectors[0].pages[0],input.vectors[1].pages[0]]));
 assert.throws(()=>KPD.parsePage('KPD1:invalid'));
@@ -43,6 +43,8 @@ assert.equal(KPD.formatPDO(measuredFields.spr_pdos.decoded[2]),'3: Battery 5–1
 assert.equal(KPD.formatPDO(measuredFields.spr_pdos.decoded[3]),'4: Variable 16–20 V / 最大 2.5 A');
 assert.match(KPD.formatPDO({index:1,kind:'spr_avs',max_current_9v_15v_ma:2500,max_current_15v_20v_ma:0}),/非対応（0 A）/);
 assert.ok(!KPD.formatPDO({index:1,kind:'epr_avs',min_mv:15000,max_mv:0,pdp_w:100}).includes('Infinity'));
+assert.equal(KPD.formatPDO({index:6,kind:'reserved',raw:'00000000'},english),'6: Reserved slot 0x00000000');
+assert.equal(KPD.formatPDO({index:5,kind:'raw',raw:'F0001234'}),'5: 不明なPDO 0xF0001234');
 first.add([vector.url_pages[0]]);assert.equal(first.current().received,1);
 const second=new Store(storage);assert.equal(second.current().received,1);
 second.add(vector.url_pages.slice(1));assert.deepEqual(second.current().snapshot.fields,vector.snapshot.fields);
@@ -54,7 +56,8 @@ assert.deepEqual(first.sync().snapshot.fields,vector.snapshot.fields);
 second.add([KPD.parsePage(vector.url_pages[0]).text]);assert.equal(second.current().received,vector.url_pages.length);
 const original=storage.getItem(STORAGE_KEY),parts=KPD.parsePage(vector.url_pages[0]).text.split(':');
 parts[4]=(parts[4].startsWith('A')?'B':'A')+parts[4].slice(1);
-assert.throws(()=>second.add([parts.join(':')]));assert.equal(storage.getItem(STORAGE_KEY),original);
+assert.throws(()=>second.add([parts.join(':')]),/same number but different contents/);
+assert.equal(storage.getItem(STORAGE_KEY),original);
 second.add(input.vectors[0].pages);assert.equal(second.list().length,2);
 second.select(KPD.parsePage(vector.url_pages[0]).key);assert.deepEqual(second.current().snapshot.fields,vector.snapshot.fields);
 second.clear();assert.equal(second.current().received,0);assert.equal(second.list().length,1);

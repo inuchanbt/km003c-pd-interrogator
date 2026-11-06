@@ -8,7 +8,9 @@ Capture USB Power Delivery data from a ChargerLAB POWER-Z KM003C, then scan the 
 
 ## Try it on your phone
 
-Open the importer and choose a power source, cable, or PPS example under **Try without a device**. The samples use synthetic data. You can view details and save JSON without hardware, a GitHub account, or a Python install. Choose **日本語** to switch the interface.
+Open the importer and choose a power source, cable, or PPS example under **Try without a device**. You can view details and save JSON without hardware, a GitHub account, or a Python install. Choose **日本語** to switch the interface.
+
+The built-in samples display **DEMO** and stay out of import history. Saved and shared demo JSON includes `"synthetic": true` and a `sample_type` of `source`, `cable`, or `pps`. Imported QR data with `origin: "demo"` also gets the synthetic flag. Measurement exports retain their original origin and fields.
 
 ![Power source demo in the importer at phone width](docs/images/demo-en.png)
 
@@ -23,7 +25,9 @@ The experimental overlay targets **KM003C HW 2.3 with the exact supported stock 
 - **PPS.** In **Charging protocol**, set the PD mode beside **Be ready!** to **PD3.0 (SPR)** when using an EPR-capable source. Use the stock **Power Delivery** trigger to establish a PPS contract. Once the output follows the setpoint, hold Left and Right on the adjustment screen. The result shows the request and the source's PPS Status reply.
 - **Phone.** Scan each page with the iPhone Camera app and open its link. Pages may be scanned in any order. Left and Right change pages on the meter. Exit returns to the stock screen. The importer also accepts images and pasted KPD1 text.
 
-The importer decodes the URL fragment in your browser. History is saved on the same browser origin and stays available when you change the interface language. Save important results as JSON. The meter retains its latest result in RAM until it restarts. See [capture and storage behavior](docs/NATIVE-CAPTURE-207.md) and [source queries and PPS operation](docs/NATIVE-INFO-207.md).
+A cable result marked **Recorded with e-marker emulation enabled** records the meter's setting. With this setting enabled, the physical source of each VDO is uncertain.
+
+The importer decodes the URL fragment locally and stores up to 10 partial or complete transfers on the same browser origin. Reopen a history entry to decode its original QR pages with the current importer. History is shared between the English and Japanese views. Save important results as JSON before clearing browser data or closing a private session. The meter retains its latest result in RAM until it restarts. See [capture and storage behavior](docs/NATIVE-CAPTURE-207.md) and [source queries and PPS operation](docs/NATIVE-INFO-207.md).
 
 ## Host CLI
 

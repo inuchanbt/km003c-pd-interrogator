@@ -33,6 +33,44 @@ SYNTHETIC_PDOS = struct.pack('<5I', 0x3FF00000 | (100 << 10) | 300,
     0x02000000 | (180 << 10) | 300, 0x40000000 | (240 << 20) | (100 << 10) | 181,
     0x80000000 | (400 << 20) | (320 << 10) | 250, 0)
 
+# Independent literal words and expected values from USB PD 3.2 v1.1 Tables 6.9,
+# 6.11–15 and the EPR slot layout in §6.5.15.1. Some reserved bits are deliberately
+# set to catch masks that bleed into a neighboring value. These are decoder tests,
+# not valid capability advertisements.
+REFERENCE_SOURCE_PDOS = (
+    ('2AE190FA', 0, dict(kind='fixed', voltage_mv=5000, current_ma=2500, peak_current_code=2,
+                        reserved='00400000', capabilities=dict(
+                            dual_role_power=True, usb_suspend_supported=False, unconstrained_power=True,
+                            usb_communications_capable=False, dual_role_data=True,
+                            unchunked_extended_messages_bit=0, epr_mode_capable_bit=1))),
+    ('3FE2D12C', 0, dict(kind='fixed', voltage_mv=9000, current_ma=3000, peak_current_code=2,
+                        reserved='3FC00000')),
+    ('59A1B8AB', 1, dict(kind='battery', min_mv=5500, max_mv=20500, max_power_mw=42750)),
+    ('99051D25', 2, dict(kind='variable', min_mv=16350, max_mv=20000, current_ma=2930)),
+    ('CFA521BF', 3, dict(kind='pps', min_mv=3300, max_mv=21000, current_ma=3150)),
+    ('EFF47D73', 3, dict(kind='spr_avs', max_current_9v_15v_ma=2870,
+                        max_current_15v_20v_ma=3710, peak_current_code=3)),
+    ('00000000', 0, dict(kind='reserved')),
+    ('0008C1F4', 0, dict(kind='fixed', voltage_mv=28000, current_ma=5000, peak_current_code=0,
+                        reserved='00000000')),
+    ('000B41F4', 0, dict(kind='fixed', voltage_mv=36000, current_ma=5000, peak_current_code=0,
+                        reserved='00000000')),
+    ('000F01F4', 0, dict(kind='fixed', voltage_mv=48000, current_ma=5000, peak_current_code=0,
+                        reserved='00000000')),
+    ('DBC196F0', 3, dict(kind='epr_avs', min_mv=15000, max_mv=48000, pdp_w=240,
+                        peak_current_code=2)),
+)
+
+
+def reference_pdo_fields():
+    fields = {}
+    for name, records in (('spr_pdos', REFERENCE_SOURCE_PDOS[:6]), ('epr_pdos', REFERENCE_SOURCE_PDOS)):
+        raw = b''.join(bytes.fromhex(word)[::-1] for word, _, _ in records)
+        decoded = [dict(index=i, raw=word, type=type_code, **values)
+                   for i, (word, type_code, values) in enumerate(records, 1)]
+        fields[name] = dict(status='observed', raw=raw.hex().upper(), decoded=decoded)
+    return fields
+
 
 def setUpModule():
     (ROOT/'artifacts').mkdir(exist_ok=True)
@@ -94,6 +132,19 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(d['power_state_change'], dict(state_code=2, indicator_code=3, reserved=0))
         self.assertEqual(d['trailing_hex'], '55')
 
+    def test_status_reserved_bits_do_not_imply_input_or_events(self):
+        d = model.decode('source_status', bytes.fromhex('01E5A0E1F9C1FF00'))
+        self.assertEqual(d['present_input'], dict(external=False, external_type=None,
+            internal_battery=False, internal_non_battery=False, reserved=0xE5))
+        self.assertEqual(d['present_battery_input'], dict(raw=0xA0, active=None, reserved=0xA0))
+        self.assertEqual(d['events'], dict(ocp=False, otp=False, ovp=False,
+            pps_current_limit=False, reserved=0xE1))
+        self.assertEqual(d['temperature_status'], dict(code=0, reserved=0xF9))
+        self.assertEqual(d['power_status'], dict(cable=False, other_ports=False, external_power=False,
+            events=False, temperature=False, reserved=0xC1))
+        self.assertEqual(d['power_state_change'], dict(state_code=7, indicator_code=7, reserved=0xC0))
+        self.assertEqual(d['trailing_hex'], '00')
+
     def test_measured_source_identity(self):
         d = model.decode('source_identity', MEASURED_SOURCE_ID)
         self.assertEqual(d['vdos'], ['FF00A841', '01C032AC', '00000000', '00220000', '40000000'])
@@ -124,6 +175,22 @@ class ModelTests(unittest.TestCase):
         for raw in (MEASURED_SOURCE_ID[:12], struct.pack('<I', 0xFF00A881) + MEASURED_SOURCE_ID[4:]):
             self.assertNotIn('identity', model.decode('source_identity', raw))
 
+    def test_source_identity_validates_header_and_preserves_vdo_bits(self):
+        # Wrong SVID, unstructured, nonzero object position, reserved bit, and wrong command.
+        for word in (0x1234A841, 0xFF002841, 0xFF00A941, 0xFF00A861, 0xFF00A842):
+            with self.subTest(vdm=hex(word)):
+                raw = struct.pack('<I', word) + MEASURED_SOURCE_ID[4:]
+                decoded = model.decode('source_identity', raw)
+                self.assertEqual(decoded, dict(vdos=[f'{word:08X}', '01C032AC', '00000000',
+                                                     '00220000', '40000000']))
+        raw = struct.pack('<5I', 0xFF00A841, 0x01E132AC, 0x89ABCDEF, 0x00220127, 0x58C00024)
+        identity = model.decode('source_identity', raw)['identity']
+        self.assertEqual((identity['xid'], identity['bcd_device'], identity['dfp_type'],
+                          identity['connector_type_code'], identity['id_header_reserved']),
+                         ('89ABCDEF', '0127', 'power_brick', 3, '00010000'))
+        self.assertEqual(identity['product_type_vdos'], [dict(index=5, kind='dfp', raw='58C00024',
+            version_code=2, version='1.2', host_capability_code=0, port_number=4, reserved='18C00020')])
+
     def test_measured_source_cap_ext_and_source_info(self):
         d = model.decode('source_cap_ext', MEASURED_SCEDB)
         self.assertEqual(d, dict(vid='32AC', pid='0022', xid='00000000', fw_version=0,
@@ -149,6 +216,23 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((variable['kind'], variable['min_mv'], variable['max_mv'], variable['current_ma']),
                          ('variable', 16000, 20000, 2500))
         self.assertEqual((reserved['index'], reserved['kind']), (5, 'reserved'))
+
+    def test_independent_source_pdo_reference(self):
+        for name, field in reference_pdo_fields().items():
+            with self.subTest(field=name):
+                self.assertEqual(model.decode(name, bytes.fromhex(field['raw'])), field['decoded'])
+
+    def test_fixed_source_capability_bits_in_isolation(self):
+        for word, flag in (
+            (0x200190FA, 'dual_role_power'), (0x100190FA, 'usb_suspend_supported'),
+            (0x080190FA, 'unconstrained_power'), (0x040190FA, 'usb_communications_capable'),
+            (0x020190FA, 'dual_role_data'), (0x010190FA, 'unchunked_extended_messages_bit'),
+            (0x008190FA, 'epr_mode_capable_bit'),
+        ):
+            with self.subTest(flag=flag):
+                first = model.decode('spr_pdos', struct.pack('<I', word))[0]
+                self.assertEqual([name for name, value in first['capabilities'].items() if value], [flag])
+                self.assertEqual((first['voltage_mv'], first['current_ma']), (5000, 2500))
 
     def test_measured_headerless_and_synthetic_active_cable(self):
         measured = model.decode('cable_identity', MEASURED_CABLE, 'km003c_cable')['cable']
@@ -475,13 +559,20 @@ class PhoneTests(unittest.TestCase):
         for identifier, status, identity in ((33, MEASURED_STATUS, MEASURED_SOURCE_ID),
                                             (34, SYNTHETIC_STATUS, SYNTHETIC_DRD_ID),
                                             (35, SYNTHETIC_STATUS[:6], MEASURED_SOURCE_ID[:12]),
-                                            (36, SYNTHETIC_STATUS[:5], struct.pack('<I', 0xFF00B841) + MEASURED_SOURCE_ID[4:])):
+                                            (36, SYNTHETIC_STATUS[:5], struct.pack('<I', 0xFF00B841) + MEASURED_SOURCE_ID[4:]),
+                                            (37, bytes.fromhex('01E5A0E1F9C1FF00'),
+                                             struct.pack('<5I', 0xFF00A841, 0x01E132AC, 0x89ABCDEF,
+                                                         0x00220127, 0x58C00024))):
             snap = model.new_snapshot('km003c', f'{identifier:016x}')
             model.set_field(snap, 'source_status', 'pass', status)
             model.set_field(snap, 'source_identity', 'pass', identity)
             model.set_field(snap, 'spr_pdos', 'observed', SYNTHETIC_PDOS)
             vectors.append(dict(snapshot=snap, pages=transfer.encode_pages(snap),
                                 url_pages=transfer.encode_pages(snap, base_url=transfer.DEFAULT_IMPORT_URL)))
+        reference = model.new_snapshot('km003c', '0000000000000026')
+        reference['fields'].update(reference_pdo_fields())
+        vectors.append(dict(snapshot=reference, pages=transfer.encode_pages(reference),
+                            url_pages=transfer.encode_pages(reference, base_url=transfer.DEFAULT_IMPORT_URL)))
         saved_pages = (FIXTURES/'stock-probe-06-pages.txt').read_text(encoding='ascii').splitlines()
         saved = transfer.decode_pages(reversed(saved_pages))
         self.assertEqual(saved['fields']['source_status']['raw'], '00060000000000')
@@ -504,6 +595,21 @@ class PhoneTests(unittest.TestCase):
                                  input=json.dumps(dict(vectors=vectors,images=images)),
                                  text=True,capture_output=True,cwd=ROOT,timeout=30)
         self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
+
+    def test_browser_export_and_history_handlers(self):
+        # Exercise both measurement origins also used by the built-in demos.
+        measurements = {}
+        for origin, field, status, raw in (
+            ('km003c_cable', 'cable_identity', 'observed', MEASURED_CABLE),
+            ('km003c_pps', 'pps_status', 'pass', bytes.fromhex('64FE0123FE000002')),
+        ):
+            capture = model.new_snapshot(origin, '0000000000000029')
+            model.set_field(capture, field, status, raw)
+            measurements[origin] = transfer.encode_pages(capture)
+        completed = subprocess.run(['node', str(ROOT/'tests/check_phone_ui.cjs')],
+                                   input=json.dumps(measurements), text=True, encoding='utf-8',
+                                   capture_output=True, cwd=ROOT, timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 if __name__=='__main__':unittest.main()

@@ -55,11 +55,12 @@ function showCurrent(){
   }
   $('history').value=sample?'':transfers.state.active||'';
   $('reset').disabled=!!sample || !result.total;
-  snapshot=sample||result.snapshot;$('result').classList.toggle('hidden',!snapshot);
+  snapshot=sample?.snapshot||result.snapshot;$('result').classList.toggle('hidden',!snapshot);
   if(snapshot)render();
 }
 const hexCode=(value,width=2)=>`0x${value.toString(16).toUpperCase().padStart(width,'0')}`;
 const onOff=value=>value?t('Yes','あり'):t('No','なし');
+const reservedCode=code=>t(`Reserved (${code})`,`予約値（${code}）`);
 const codeLabel=(labels,code)=>labels[code]??t(`Reserved or unknown (${code})`,`予約・未知（${code}）`);
 
 function formatPDOs(name, rows){
@@ -123,8 +124,13 @@ function formatStatus(d){
     `${t('PPS operating mode bit','PPS動作モードビット')} ${Number(d.events.pps_current_limit)} ${t('(PPS only. 1 = current limit, 0 = constant voltage)','（PPS動作時のみ有効。1 は電流制限、0 は定電圧）')}`];
   const state=d.power_state_change;
   if(state){
-    detail.push(`${t('Power state','電源状態')} ${codeLabel([t('Unsupported','非対応'),'S0','Modern Standby','S3','S4','S5','G3'],state.state_code)}`);
-    const indicator=state.state_code>0 && state.state_code<7?codeLabel(t(['Off','On','Blinking','Breathing'],['消灯','点灯','点滅','明滅']),state.indicator_code):t(`Code ${state.indicator_code} (state unknown)`,`コード ${state.indicator_code}（状態を判定できません）`);
+    const states=[t('Unsupported','非対応'),'S0','Modern Standby','S3','S4','S5','G3'];
+    detail.push(`${t('Power state','電源状態')} ${states[state.state_code]??reservedCode(state.state_code)}`);
+    const indicators=t(['Off','On','Blinking','Breathing'],['消灯','点灯','点滅','明滅']);
+    let indicator=indicators[state.indicator_code]??reservedCode(state.indicator_code);
+    if(state.indicator_code<indicators.length && (state.state_code===0 || state.state_code>=states.length)){
+      indicator=t(`Code ${state.indicator_code} (state unknown)`,`コード ${state.indicator_code}（状態を判定できません）`);
+    }
     detail.push(`${t('LED indicator','LED指示')} ${indicator}`);
   }else detail.push(t('Power state byte absent','電源状態のバイトなし'));
   for(const [en,ja,value] of [['Input','入力',input],['Battery','バッテリー',d.present_battery_input],['Event','イベント',d.events],
@@ -255,12 +261,13 @@ function render(){
       else if(name==='cable_identity'){
         if(d.svids)text=`${t('Identity unavailable','Identity未取得')}\nSVID ${d.svids.map(id=>`0x${id}`).join(' / ')}`;
         else{
-          text=d.cable?KPD.formatCable(d.cable,t):t(`${d.vdos.length} VDOs saved (cable specifications unknown)`,`${d.vdos.length} VDOを保存（ケーブルの仕様は不明）`);
+          const count=d.vdos.length;
+          text=d.cable?KPD.formatCable(d.cable,t):t(`${count} ${count===1?'VDO':'VDOs'} saved (cable specifications unknown)`,`${count} VDOを保存（ケーブルの仕様は不明）`);
           detail=formatCableDetails(d);
         }
       }
       text=field.status==='emulation_enabled'?`${status}\n${text}`:`${text}\n${status}`;
-    }else if(field.raw){
+    }else if(field.raw!==undefined){
       if(name==='source_status')text+='\n'+t('Status payload too short','Statusの長さ不足');
       else if(name==='pps_status')text+='\n'+t('Could not decode PPS status','PPSステータスの形式を解釈できません');
     }
@@ -278,7 +285,7 @@ function render(){
     }
     tr.append(th,td);$('rows').append(tr);
   }
-  $('raw').textContent=JSON.stringify(snapshot,null,2);
+  $('raw').textContent=serializeResult();
 }
 $('add').onclick=()=>{addPages($('pages').value.split(/\r?\n/));};
 $('reset').onclick=()=>{transfers.clear();$('pages').value='';showCurrent();report('');stopCamera();};
@@ -291,7 +298,7 @@ $('language').onchange=()=>{
 $('sample').onchange=()=>{
   const key=$('sample').value;
   const pages=Object.hasOwn(KPDSamples,key)?KPDSamples[key]:null;
-  sample=pages?{...KPD.assemble(pages).snapshot,demo:true}:null;
+  sample=pages?{type:key,snapshot:KPD.assemble(pages).snapshot}:null;
   showCurrent();report('');
   if(sample)$('result').scrollIntoView({block:'start'});
 };
@@ -321,7 +328,13 @@ $('camera').onclick=async()=>{
   }catch(error){stopCamera();report(error);}
 };
 $('stopCamera').onclick=stopCamera;window.addEventListener('pagehide',stopCamera);
-function resultFile(){return new File([JSON.stringify(snapshot,null,2)+'\n'],`pdinfo-${snapshot.measurement_id}.json`,{type:'application/json'});}
+function serializeResult(){
+  let result=snapshot;
+  if(sample)result={...snapshot,demo:true,synthetic:true,sample_type:sample.type};
+  else if(snapshot.origin==='demo')result={...snapshot,synthetic:true};
+  return JSON.stringify(result,null,2);
+}
+function resultFile(){return new File([serializeResult()+'\n'],`pdinfo-${snapshot.measurement_id}.json`,{type:'application/json'});}
 $('save').onclick=()=>{if(!snapshot)return;const url=URL.createObjectURL(resultFile()),a=document.createElement('a');a.href=url;a.download=`pdinfo-${snapshot.measurement_id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 $('share').onclick=async()=>{if(!snapshot)return;try{const file=resultFile();if(!navigator.canShare?.({files:[file]}))throw localError('This browser cannot share files. Use “Save JSON”.','このブラウザではファイル共有を利用できません。「JSONを保存」を使ってください。');await navigator.share({files:[file],title:t('PD measurement results','PD測定結果')});}catch(error){if(error.name!=='AbortError')report(error);}};
 function consumeFragment(){

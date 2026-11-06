@@ -249,7 +249,8 @@
       const equivalent=p.max_mv>0?`\n  ${t(`PDP equivalent at ${max} V`,`${max} V時のPDP換算`)}: ${Number((p.pdp_w*1000/p.max_mv).toFixed(3))} A`:'';
       return `${p.index}: EPR AVS ${p.min_mv/1000}–${p.max_mv/1000} V / ${p.pdp_w} W MAX${equivalent}`;
     }
-    return `${p.index}: ${p.kind} ${p.raw}`;
+    const label=p.kind==='reserved'?t('Reserved slot','予約スロット'):t('Unknown PDO','不明なPDO');
+    return `${p.index}: ${label} 0x${p.raw}`;
   }
   function formatCable(cable,t=japanese) {
     const {kind,vid,pid,layout,vbus_through,max_vbus_mv,voltage_code,
