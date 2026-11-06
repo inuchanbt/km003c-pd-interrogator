@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Exact stock-2.0.7/HW2.3 LVGL ABI. All storage belongs to the native heap.
- * Export only the observer's owned, stable PDO result, never idle cache bytes.
+ * Export the observer's owned results from native PD and e-Marker scans.
  */
 #include "kpd.h"
 #include "acquire.h"
@@ -51,6 +51,8 @@ struct screen_state {
     struct kpd207_capture capture;
     struct kpd207_random random;
     struct kpd207_info info;
+    struct kpd207_cable cable;
+    bool prefer_cable;
 };
 _Static_assert(sizeof(struct image_descriptor) == 12, "ARM32 image descriptor");
 _Static_assert(offsetof(struct screen_state, capture) == 56 &&
@@ -110,9 +112,9 @@ static uint8_t image_signal(void *obj, uint8_t sign, void *param) {
 
 static void text(struct screen_data *d, const char *str, unsigned x, unsigned y, unsigned scale) {
     /* Three columns/five rows, top bit first. Code-native bitmap text. */
-    const char chars[] = "0123456789ACDEILNOPRSTUVX/GW ";
+    const char chars[] = "0123456789ACDEILNOPRSTUVX/GWB ";
     const uint16_t glyphs[] = {0x7b6f,0x2c97,0x73e7,0x73cf,0x5bc9,0x79cf,0x79ef,0x7292,0x7bef,0x7bcf,
-        0x2bed,0x7927,0x6b6e,0x79a7,0x7497,0x4927,0x5ffd,0x7b6f,0x7be4,0x6bad,0x79cf,0x7492,0x5b6f,0x5b6a,0x5aad,0x12a4,0x797f,0x5bfd,0};
+        0x2bed,0x7927,0x6b6e,0x79a7,0x7497,0x4927,0x5ffd,0x7b6f,0x7be4,0x6bad,0x79cf,0x7492,0x5b6f,0x5b6a,0x5aad,0x12a4,0x797f,0x5bfd,0x6bae,0};
     for (unsigned c = 0; str[c]; ++c) {
         unsigned g = 0;
         while (chars[g] && chars[g] != str[c]) ++g;
@@ -136,7 +138,7 @@ static bool render(struct screen_state *s) {
     if (!d->transfer.ready) {
         bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
         text(d, reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 42, 80, 4);
-        text(d, reading ? "PLEASE WAIT" : "RUN PD TEST", 34, 120, 4);
+        text(d, reading ? "PLEASE WAIT" : s->cable.active ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
         text(d, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
@@ -148,7 +150,8 @@ static bool render(struct screen_state *s) {
                 d->pixels[8 + y * 30 + x / 8] |= (uint8_t)(0x80u >> (x % 8));
     }
     /* Up to 61 pages for the bounded maximum schema, outside quiet zone. */
-    char label[] = "SAVED 01/01";
+    char label[12];
+    memcpy(label, d->transfer.binary[12] == KPD_KM003C_CABLE ? "CABLE 01/01" : "SAVED 01/01", sizeof(label));
     label[6] = (char)('0' + s->page / 10); label[7] = (char)('0' + s->page % 10);
     label[9] = (char)('0' + d->transfer.pages / 10); label[10] = (char)('0' + d->transfer.pages % 10);
     text(d, label, 98, 235, 1);
@@ -164,6 +167,13 @@ static void close_screen(struct screen_state *s) {
     s->image = s->group = s->data = NULL;
 }
 
+static bool freeze_result(struct screen_state *s) {
+    if (s->cable.active && !s->cable.saved) return false;
+    if (s->info.attached && s->info.stage != KPD207_INFO_DONE) return false;
+    if (s->prefer_cable) return kpd207_cable_freeze(&s->cable, &s->data->transfer);
+    return kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer);
+}
+
 static void open_result(struct screen_state *s, void *layer) {
     if (!s->input) return;
     s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
@@ -171,8 +181,7 @@ static void open_result(struct screen_state *s, void *layer) {
     if (!s->data) return;
     s->page = 1;
     memset(&s->data->transfer, 0, sizeof(s->data->transfer));
-    if (!s->info.attached || s->info.stage == KPD207_INFO_DONE)
-        (void)kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer);
+    (void)freeze_result(s);
     if (!render(s)) goto failed;
     s->descriptor.header = 7u | (240u << 10) | (240u << 21); /* INDEXED_1BIT */
     s->descriptor.size = sizeof(s->data->pixels);
@@ -216,10 +225,11 @@ void kpd207_gui_screen_tick(void) {
     }
     uint32_t now = tick_get();
     kpd207_acquire_tick(&s->capture, &s->random, now);
+    bool held = s->info.frozen;
     kpd207_information_tick(&s->info, &s->capture, now);
-    if (s->data && !s->data->transfer.ready &&
-        (!s->info.attached || s->info.stage == KPD207_INFO_DONE) &&
-        kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer)) {
+    if (!held && s->info.frozen) s->prefer_cable = false;
+    if (kpd207_cable_tick(&s->cable, &s->capture)) s->prefer_cable = true;
+    if (s->data && !s->data->transfer.ready && freeze_result(s)) {
         if (render(s)) obj_invalidate(s->image);
         else close_screen(s);
     }

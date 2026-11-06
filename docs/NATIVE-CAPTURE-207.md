@@ -104,3 +104,15 @@ python tools/check_capture207_live.py --snapshot <private-snapshot-dir> --output
 今回の参照電源に限り `--compare-fixture` を付けます。起動直後の空状態は `--expect-empty` です。
 所有コピー、seed準備、長さ、取得状態を確認し、QRが開いていれば凍結済み転送データとも照合します。
 完全RAM／heapと出力レポートは公開しません。
+
+## 単独のUSB-C eMarker検出
+
+純正メニューでUSB-C eMarkerを開き、ケーブルを検出してから左右を同時に長押しします。
+純正の単独検出モードでDiscover Identityの送信とケーブルからのSOP′応答を観測できた場合、
+本体に `CABLE 01/02` が表示されます。左右で2枚を切り替え、Exitで純正画面に戻れます。
+応答のVDOをそのまま保存し、電源のPDOや電源検出時のe-Markerシミュレーションの記録と区別します。
+単独検出中に応答が確認できない場合は `NO DATA` を表示します。
+
+iPhoneの履歴では「ケーブル測定」「電源測定」として、それぞれのIDで開けます。
+本体はケーブルの種類、VID/PIDを含むIdentityのVDOを渡します。
+独立したSVIDやモードの一覧は今回の転送項目に含まれません。

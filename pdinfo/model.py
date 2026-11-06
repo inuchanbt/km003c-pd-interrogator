@@ -7,7 +7,7 @@ FIELDS = ('spr_pdos', 'epr_pdos', 'revision', 'source_cap_ext', 'source_info',
           'source_status', 'pps_status', 'manufacturer', 'cable_identity', 'source_identity')
 STATES = ('not_requested', 'pass', 'observed', 'unsupported', 'no_response',
           'tx_failed', 'rejected', 'busy', 'reset', 'invalid', 'partial', 'unknown', 'emulation_enabled')
-ORIGINS = ('km003c', 'ch32h417', 'demo')
+ORIGINS = ('km003c', 'ch32h417', 'demo', 'km003c_cable')
 CAPTURE_STATES = ('unknown', 'completed', 'failed', 'interrupted', 'imported')
 
 

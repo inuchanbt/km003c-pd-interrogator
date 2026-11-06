@@ -38,6 +38,14 @@ assert.throws(()=>second.add([parts.join(':')]));assert.equal(storage.getItem(ST
 second.add(input.vectors[0].pages);assert.equal(second.list().length,2);
 second.select(KPD.parsePage(vector.url_pages[0]).key);assert.deepEqual(second.current().snapshot.fields,vector.snapshot.fields);
 second.clear();assert.equal(second.current().received,0);assert.equal(second.list().length,1);
+const cable=input.vectors.find(v=>v.snapshot.origin==='km003c_cable');
+second.add(cable.url_pages);second.add(vector.url_pages);
+const mixedHistory=new Store(storage);
+for(const item of [cable,vector]){
+  const record=mixedHistory.list().find(entry=>entry.id===item.snapshot.measurement_id);
+  assert.equal(record.origin,item.snapshot.origin);
+  assert.deepEqual(mixedHistory.select(record.key).snapshot.fields,item.snapshot.fields);
+}
 const unavailable=new Store({getItem(){throw Error('blocked');},setItem(){throw Error('blocked');}});
 unavailable.add(vector.url_pages);assert.equal(unavailable.persisted,false);assert.deepEqual(unavailable.current().snapshot.fields,vector.snapshot.fields);
 unavailable.clear();assert.equal(unavailable.list().length,0);

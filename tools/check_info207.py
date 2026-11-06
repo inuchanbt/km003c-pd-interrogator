@@ -107,7 +107,7 @@ def main():
     # A separate native cable-only operation must preserve the completed PD
     # fields. Returning to actual PD mode starts fresh with the native setting.
     completed = bytes(cpu.mem_read(info, 2144))
-    cpu.mem_write(ctx, b'\x04')
+    cpu.mem_write(ctx, b'\x05')
     tick(1)
     log(events[1]['wire_hex'], 1)
     tick(1)

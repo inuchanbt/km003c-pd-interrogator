@@ -5,7 +5,7 @@
     'source_status','pps_status','manufacturer','cable_identity','source_identity'];
   const states = ['not_requested','pass','observed','unsupported','no_response',
     'tx_failed','rejected','busy','reset','invalid','partial','unknown','emulation_enabled'];
-  const origins = ['km003c','ch32h417','demo'];
+  const origins = ['km003c','ch32h417','demo','km003c_cable'];
   const captureStates = ['unknown','completed','failed','interrupted','imported'];
   const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
   function crc32(bytes) {

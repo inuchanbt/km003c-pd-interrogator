@@ -5,6 +5,7 @@ const transfers=new KPDStore.Store(browserStorage);
 let snapshot=null,stream=null,scanFrame=null;
 const names={spr_pdos:'SPR PDO',epr_pdos:'EPR PDO',revision:'PDリビジョン',source_cap_ext:'電源の識別情報',source_info:'電源のPDP情報',source_status:'電源ステータス',pps_status:'PPSステータス',manufacturer:'メーカー情報',cable_identity:'ケーブルIdentity',source_identity:'電源Identity'};
 const statuses={not_requested:'未要求',pass:'取得成功',observed:'受信を記録',unsupported:'非対応の応答',no_response:'無応答',tx_failed:'送信失敗',rejected:'拒否',busy:'待機応答',reset:'リセット',invalid:'取得失敗',partial:'一部のみ取得',unknown:'不明',emulation_enabled:'e-Markerシミュレーション有効時の記録'};
+const measurementNames={km003c:'電源測定',km003c_cable:'ケーブル測定',ch32h417:'CH32H417',demo:'DEMO'};
 function report(error){$('error').textContent=error?.message||String(error||'');}
 function addPages(texts){
   try{
@@ -21,17 +22,19 @@ function showCurrent(){
   $('storageNotice').textContent=transfers.persisted?'':'このブラウザでは途中結果を保存できません。この画面のカメラで続きのQRを読み、完了後にJSONを保存してください。';
   const list=transfers.list();$('historyCard').classList.toggle('hidden',!list.length);$('history').replaceChildren();
   const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='保存済みの測定を選ぶ';$('history').append(placeholder);
-  for(const item of list){const option=document.createElement('option');option.value=item.key;option.textContent=`${item.id} · ${item.received}/${item.total} 枚${item.received===item.total?' · 完了':''}`;$('history').append(option);}
+  for(const item of list){const option=document.createElement('option');option.value=item.key;const label=measurementNames[item.origin];option.textContent=`${label?label+' · ':''}${item.id} · ${item.received}/${item.total} 枚${item.received===item.total?' · 完了':''}`;$('history').append(option);}
   $('history').value=transfers.state.active||'';
   snapshot=result.snapshot;$('result').classList.toggle('hidden',!snapshot);
   if(snapshot)render();
 }
 function render(){
   $('result').classList.remove('hidden');$('badges').replaceChildren();$('rows').replaceChildren();
-  for(const text of [snapshot.origin.toUpperCase(),`ID ${snapshot.measurement_id}`]){const badge=document.createElement('span');badge.className='badge';badge.textContent=text;$('badges').append(badge);}
+  const cable=snapshot.origin==='km003c_cable';
+  for(const text of [measurementNames[snapshot.origin],`ID ${snapshot.measurement_id}`]){const badge=document.createElement('span');badge.className='badge';badge.textContent=text;$('badges').append(badge);}
   const warning=snapshot.origin==='demo'?'デモ用の架空データです。実際の測定結果ではありません。':['failed','interrupted','unknown'].includes(snapshot.capture_status)?`取得状態: ${snapshot.capture_status}。一部の情報が取得できていない可能性があります。`:'';
   $('notice').textContent=warning;$('notice').classList.toggle('hidden',!warning);
   for(const [name,field]of Object.entries(snapshot.fields)){
+    if(cable && name!=='cable_identity')continue;
     const tr=document.createElement('tr'),th=document.createElement('th'),td=document.createElement('td');
     th.scope='row';th.textContent=names[name];
     const d=field.decoded;let text=statuses[field.status]||field.status;
@@ -43,6 +46,13 @@ function render(){
       else if(name==='source_info')text=`報告 ${d.port_reported_pdp_w} W / 現在 ${d.port_present_pdp_w} W / 最大 ${d.port_maximum_pdp_w} W`;
       else if(name==='source_cap_ext')text=`VID ${d.vid} / PID ${d.pid}\nSPR ${d.spr_pdp_w} W${d.epr_pdp_w===null?'':` / EPR ${d.epr_pdp_w} W`}`;
       else if(name==='manufacturer')text=d.name||`名称は空欄 / VID ${d.vid} / PID ${d.pid}`;
+      else if(cable){
+        const id=d.vdos[1],product=d.vdos[3];
+        const type=(parseInt(id,16)>>>27)&7;
+        const summary=type===3?'パッシブケーブル':type===4?'アクティブケーブル':'USB-Cケーブル';
+        const detail=d.vdos.map((vdo,index)=>`${['VDMヘッダー','IDヘッダー','認証情報','製品情報','ケーブルVDO'][index]||'追加VDO'}  0x${vdo}`).join('\n');
+        text=d.vdos.length>=5?`${summary}\nVID ${id.slice(-4)} / PID ${product.slice(0,4)}\n${detail}`:detail;
+      }
       else text=`${d.vdos.length} VDOを保存`;
       text+=`\n${statuses[field.status]}`;
     }else if(field.raw)text+=`\n${field.raw}`;

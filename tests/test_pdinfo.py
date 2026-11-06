@@ -84,6 +84,8 @@ class TransferTests(unittest.TestCase):
         self.assertTrue(all(len(p.encode('ascii'))<=152 for p in pages))
         self.assertEqual(transfer.decode_pages(list(reversed(pages)))['fields'],original['fields'])
         self.assertEqual(transfer.decode_pages([transfer.normalize_page(p) for p in pages])['fields'],original['fields'])
+        old = transfer.encode_pages(original, base_url=transfer.DEFAULT_IMPORT_URL.replace('v=3', 'v=2'))
+        self.assertEqual(transfer.decode_pages(old)['fields'], original['fields'])
     def test_url_validation_and_encoded_fragments(self):
         from urllib.parse import quote
         raw=transfer.encode_pages(snapshot())
@@ -303,6 +305,11 @@ class PhoneTests(unittest.TestCase):
         model.set_field(simulated,'cable_identity','emulation_enabled',struct.pack('<5I',0xff00a841,0x1c600000,0,0,0x000a4644))
         vectors.append(dict(snapshot=simulated,pages=transfer.encode_pages(simulated),
                             url_pages=transfer.encode_pages(simulated,base_url=transfer.DEFAULT_IMPORT_URL)))
+        cable=model.new_snapshot('km003c_cable','0000000000000008')
+        cable['capture_status']='completed'
+        model.set_field(cable,'cable_identity','observed',struct.pack('<5I',0xff00a841,0x1c600000,0,0,0x000a4644))
+        vectors.append(dict(snapshot=cable,pages=transfer.encode_pages(cable),
+                            url_pages=transfer.encode_pages(cable,base_url=transfer.DEFAULT_IMPORT_URL)))
         actual=model.new_snapshot('km003c','0000000000000006')
         actual['capture_status']='imported'
         collector=Collector(actual)
@@ -311,9 +318,11 @@ class PhoneTests(unittest.TestCase):
                             url_pages=transfer.encode_pages(actual,base_url=transfer.DEFAULT_IMPORT_URL)))
         images=[]
         with tempfile.TemporaryDirectory(dir=ROOT/'artifacts') as folder:
-            path=Path(folder)/'qr';transfer.write_qr(vectors[-1]['url_pages'],path)
-            for i,text in enumerate(vectors[-1]['url_pages'],1):
-                images.append(dict(text=text,packed=base64.b64encode((path/f'qr-{i:02}.bin').read_bytes()).decode()))
+            for vector in vectors[-2:]:
+                path=Path(folder)/vector['snapshot']['origin']
+                transfer.write_qr(vector['url_pages'],path)
+                for i,text in enumerate(vector['url_pages'],1):
+                    images.append(dict(text=text,packed=base64.b64encode((path/f'qr-{i:02}.bin').read_bytes()).decode()))
         completed=subprocess.run(['node',str(ROOT/'tests/check_phone.cjs')],
                                  input=json.dumps(dict(vectors=vectors,images=images)),
                                  text=True,capture_output=True,cwd=ROOT,timeout=30)

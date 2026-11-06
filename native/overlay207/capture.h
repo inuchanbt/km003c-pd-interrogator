@@ -21,6 +21,7 @@ struct kpd207_capture {
 _Static_assert(sizeof(struct kpd207_sample) == 78, "Capture sample ABI");
 _Static_assert(sizeof(struct kpd207_capture) == 180, "Capture state ABI");
 void kpd207_capture_seed(struct kpd207_capture *, const uint8_t seed[8]);
+bool kpd207_capture_take_id(struct kpd207_capture *, uint8_t id[8]);
 void kpd207_capture_observe(struct kpd207_capture *, const struct kpd207_sample *, uint32_t now);
 bool kpd207_capture_freeze(const struct kpd207_capture *, struct kpd_transfer *);
 #endif

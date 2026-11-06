@@ -22,7 +22,7 @@ bool kpd_freeze(const struct kpd_snapshot *snapshot, struct kpd_transfer *out) {
     out->length = 0;
     out->pages = 0;
     out->crc = 0;
-    if (snapshot == NULL || snapshot->origin > 2 || snapshot->capture_status > 4)
+    if (snapshot == NULL || snapshot->origin > KPD_KM003C_CABLE || snapshot->capture_status > 4)
         return false;
     for (unsigned i = 0; i < KPD_FIELDS; ++i) {
         const struct kpd_field *f = &snapshot->fields[i];

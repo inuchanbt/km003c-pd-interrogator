@@ -7,7 +7,7 @@
 標準カメラ対応の既定形式は、HTTPSの取込先にKPD1ページをフラグメントとして付けたURLです。
 
 ```text
-https://inuchanbt.github.io/km003c-pd-interrogator/?v=2#KPD1:<measurement-id>:<page>/<count>:<CRC32>:<base64url>
+https://inuchanbt.github.io/km003c-pd-interrogator/?v=3#KPD1:<measurement-id>:<page>/<count>:<CRC32>:<base64url>
 ```
 
 取込画面はフラグメントを自動解析し、同じ測定ID・枚数・CRCのページを端末内で集めます。
@@ -17,8 +17,8 @@ URLが別タブで開いても、同じオリジンのlocalStorageから再開�
 
 公開先のURLも含めて最大152 ASCIIバイトに収めます。
 既定の55文字の公開先では1枚に44バイトを載せ、上限サイズは61枚です。
-`?v=2` は新しい取得状態に対応するページを開くための固定バージョンで、測定データは含みません。
-以前のクエリーなしURL（47バイト分割）も読めます。新しい測定ではデータ量に応じて枚数が変わります。
+`?v=3` は単独ケーブル測定に対応する取込画面のバージョンです。
+`?v=2` とクエリーなしの旧URL（47バイト分割）も読めます。新しい測定ではデータ量に応じて枚数が変わります。
 画像のVersion・誤り訂正・ピクセル寸法は旧形式と同じです。
 
 従来の生テキスト形式も `--qr-format raw` で生成・復元できます。
@@ -51,7 +51,7 @@ QR表示中の余白には文字や模様を描かない構成です。ページ
 | --- | --- | --- |
 | 0 | 4 | ASCII `KPD1` |
 | 4 | 8 | measurement-idのバイト列 |
-| 12 | 1 | origin: 0=KM003C, 1=CH32H417, 2=DEMO |
+| 12 | 1 | origin: 0=KM003C電源測定, 1=CH32H417, 2=DEMO, 3=KM003C単独ケーブル測定 |
 | 13 | 1 | capture: 0=unknown, 1=completed, 2=failed, 3=interrupted, 4=imported |
 | 14以降 | 可変 | 下記のTLVをタグ1〜10について各1回 |
 

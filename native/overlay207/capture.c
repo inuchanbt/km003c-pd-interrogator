@@ -13,6 +13,17 @@ void kpd207_capture_seed(struct kpd207_capture *c, const uint8_t seed[8]) {
     c->flags |= KPD207_SEEDED;
 }
 
+bool kpd207_capture_take_id(struct kpd207_capture *c, uint8_t id[8]) {
+    if (!(c->flags & KPD207_SEEDED)) return false;
+    memcpy(id, c->next_id, 8);
+    /* Random boot seed plus a counter. Disable allocation on wrap. */
+    for (unsigned i = 8; i != 0; --i) {
+        if (++c->next_id[i - 1] != 0) break;
+        if (i == 1) c->flags &= (uint8_t)~KPD207_SEEDED;
+    }
+    return true;
+}
+
 void kpd207_capture_observe(struct kpd207_capture *c, const struct kpd207_sample *s, uint32_t now) {
     uint16_t sequence = (uint16_t)s->sequence[0] | (uint16_t)s->sequence[1] << 8;
     if (!(c->flags & KPD207_INITIALIZED)) {
@@ -44,13 +55,8 @@ void kpd207_capture_observe(struct kpd207_capture *c, const struct kpd207_sample
             if (!(c->flags & KPD207_CAPTURE_READY) ||
                 !equal(&s->spr_length, &c->result.spr_length, sizeof(*s) - 4)) {
                 c->result = *s;
-                memcpy(c->id, c->next_id, 8);
+                (void)kpd207_capture_take_id(c, c->id);
                 c->flags |= KPD207_CAPTURE_READY;
-                /* Random boot seed plus a counter; stop rather than wrap. */
-                for (unsigned i = 8; i != 0; --i) {
-                    if (++c->next_id[i - 1] != 0) break;
-                    if (i == 1) c->flags &= (uint8_t)~KPD207_SEEDED;
-                }
             }
             /* Consume even an identical-payload receive, without changing ID. */
             memcpy(c->result.sequence, s->sequence, 2);

@@ -48,7 +48,12 @@
     }
     current(){const record=this.state.transfers[this.state.active];return record?KPD.assemble(record.pages):{received:0,total:0,snapshot:null};}
     select(key){if(!Object.hasOwn(this.state.transfers,key))throw Error('保存済みの測定が見つかりません');this.state.active=key;this.write();return this.current();}
-    list(){return Object.entries(this.state.transfers).sort((a,b)=>b[1].updatedAt-a[1].updatedAt).map(([key,entry])=>{const page=KPD.parsePage(entry.pages[0]);return {key,id:page.id,received:entry.pages.length,total:page.total};});}
+    list(){
+      return Object.entries(this.state.transfers).sort((a,b)=>b[1].updatedAt-a[1].updatedAt).map(([key,entry])=>{
+        const page=KPD.parsePage(entry.pages[0]),result=KPD.assemble(entry.pages);
+        return {key,id:page.id,received:result.received,total:result.total,origin:result.snapshot?.origin};
+      });
+    }
     clear(){const latest=this.read();if(!this.persisted)latest.transfers={...this.state.transfers};const key=this.state.active;delete latest.transfers[key];latest.active=null;this.state=latest;this.write();}
     sync(){const active=this.state.active;this.state=this.read();if(Object.hasOwn(this.state.transfers,active))this.state.active=active;return this.current();}
   }

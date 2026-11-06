@@ -15,7 +15,9 @@
 #define KPD_QR_PACKED 301
 #define KPD_QR_BUFFER 302
 #define KPD_SCREEN_SIZE 240
-#define KPD_IMPORT_URL "https://inuchanbt.github.io/km003c-pd-interrogator/?v=2#"
+#define KPD_IMPORT_URL "https://inuchanbt.github.io/km003c-pd-interrogator/?v=3#"
+
+enum kpd_origin { KPD_KM003C, KPD_CH32H417, KPD_DEMO, KPD_KM003C_CABLE };
 
 enum kpd_status {
     KPD_NOT_REQUESTED, KPD_PASS, KPD_OBSERVED, KPD_UNSUPPORTED,
@@ -41,7 +43,7 @@ struct kpd_field {
 
 struct kpd_snapshot {
     uint8_t id[8];
-    uint8_t origin;          /* 0=KM003C, 1=CH32H417, 2=DEMO */
+    uint8_t origin;          /* enum kpd_origin */
     uint8_t capture_status;  /* unknown/completed/failed/interrupted/imported */
     struct kpd_field fields[KPD_FIELDS]; /* tag order defined in QR-FORMAT.md */
 };
