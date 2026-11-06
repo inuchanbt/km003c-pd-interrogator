@@ -53,6 +53,6 @@ Status codes in order are `not_requested`, `pass`, `observed`, `unsupported`, `n
 
 ## QR symbols
 
-The meter uses Version 8, error correction M, and byte mode. The symbol has 49 by 49 modules with a four-module quiet zone. Normal rendering uses four pixels per module, centered on the 240 by 240 display. Standalone PPS uses the smaller renderer to fit the stock trigger screen.
+The meter uses Version 8, error correction M, and byte mode. The symbol has 49 by 49 modules with a quiet zone of at least four modules on each side. The meter centers the QR above the page label, with four pixels per module for power and cable results and three for standalone PPS.
 
 `qr-NN.bin` holds the already generated symbol, packed row-first with the first module in the most significant bit. Zero padding brings the 2,401 symbol bits to 301 bytes. The file excludes the quiet zone. See the [DENSO WAVE capacity table](https://www.qrcode.com/en/about/versionPage/versionPage1_10.html).

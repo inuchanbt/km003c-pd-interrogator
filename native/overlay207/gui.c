@@ -36,6 +36,7 @@ typedef uint8_t (*signal_cb)(void *, uint8_t, void *);
 typedef bool (*keypad_cb)(void *, void *);
 struct image_descriptor { uint32_t header, size; const uint8_t *pixels; };
 enum { IMAGE_WIDTH = 240, IMAGE_ROW = 30, FULL_HEIGHT = 240, PPS_HEIGHT = 192 };
+enum { GLYPH_WIDTH = 3, GLYPH_HEIGHT = 5, QR_LABEL_SCALE = 2, QR_LABEL_BOTTOM_MARGIN = 2 };
 typedef char page_url[KPD_URL_MAX + 1];
 struct cable_result {
     void *table;
@@ -210,10 +211,10 @@ static void text(struct screen_state *s, const char *str, unsigned x, unsigned y
         unsigned g = 0;
         while (chars[g] && chars[g] != str[c]) ++g;
         if (!chars[g]) continue;
-        for (unsigned yy = 0; yy < 5 * scale; ++yy)
-            for (unsigned xx = 0; xx < 3 * scale; ++xx)
-                if (glyphs[g] & (1u << (14 - yy / scale * 3 - xx / scale))) {
-                    unsigned px = x + c * 4 * scale + xx, py = y + yy;
+        for (unsigned yy = 0; yy < GLYPH_HEIGHT * scale; ++yy)
+            for (unsigned xx = 0; xx < GLYPH_WIDTH * scale; ++xx)
+                if (glyphs[g] & (1u << (GLYPH_WIDTH * GLYPH_HEIGHT - 1 - yy / scale * GLYPH_WIDTH - xx / scale))) {
+                    unsigned px = x + c * (GLYPH_WIDTH + 1) * scale + xx, py = y + yy;
                     if (px < IMAGE_WIDTH && py < image_height(s)) pixel(s->data, px, py);
                 }
     }
@@ -250,7 +251,9 @@ static bool render(struct screen_state *s, uint32_t now) {
      * The smaller PPS image uses three pixels per module and a full quiet zone. */
     unsigned scale = s->origin == KPD_KM003C_PPS ? 3 : 4;
     unsigned left = (IMAGE_WIDTH - KPD_QR_SIZE * scale) / 2;
-    unsigned top = (image_height(s) - KPD_QR_SIZE * scale) / 2;
+    unsigned label_top = image_height(s) - GLYPH_HEIGHT * QR_LABEL_SCALE - QR_LABEL_BOTTOM_MARGIN;
+    /* Center above the label, leaving four blank modules on each side. */
+    unsigned top = (label_top - KPD_QR_SIZE * scale) / 2;
     for (unsigned y = 0; y < KPD_QR_SIZE; ++y) {
         if (!kpd_qr_row(&work, 22 + 4 * y, row)) return false;
         for (unsigned x = 0; x < KPD_QR_SIZE; ++x) {
@@ -266,7 +269,8 @@ static bool render(struct screen_state *s, uint32_t now) {
         s->origin == KPD_KM003C_CABLE ? "CABLE 01/01" : "SAVED 01/01", sizeof(label));
     label[6] = (char)('0' + s->page / 10); label[7] = (char)('0' + s->page % 10);
     label[9] = (char)('0' + s->pages / 10); label[10] = (char)('0' + s->pages % 10);
-    text(s, label, 98, image_height(s) - 5, 1);
+    unsigned label_width = ((sizeof(label) - 1) * (GLYPH_WIDTH + 1) - 1) * QR_LABEL_SCALE;
+    text(s, label, (IMAGE_WIDTH - label_width) / 2, label_top, QR_LABEL_SCALE);
     return true;
 }
 

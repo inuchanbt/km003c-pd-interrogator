@@ -18,6 +18,30 @@ from tools.check_native_arm import load_elf
 from pdinfo import model, transfer
 
 
+def check_qr_caption(frame, height, module_size):
+    if len(frame) != 8 + height * 30:
+        raise AssertionError('Unexpected indexed QR image size')
+    rows = [int.from_bytes(frame[i:i + 30], 'big') for i in range(8, len(frame), 30)]
+    caption = rows[-12:-2]
+    if not all(caption) or any(rows[-2:]):
+        raise AssertionError('Expected a 10-pixel caption with a 2-pixel bottom margin')
+    caption_bits = 0
+    for row in caption:
+        caption_bits |= row
+    if 240 - caption_bits.bit_length() != (caption_bits & -caption_bits).bit_length() - 1:
+        raise AssertionError('QR caption is off center')
+    qr_rows = [y for y, row in enumerate(rows[:-12]) if row]
+    qr_bits = 0
+    for y in qr_rows:
+        qr_bits |= rows[y]
+    left = 240 - qr_bits.bit_length()
+    right = (qr_bits & -qr_bits).bit_length() - 1
+    if not qr_rows or (240 - left - right, qr_rows[-1] - qr_rows[0] + 1) != (49 * module_size,) * 2:
+        raise AssertionError('QR symbol dimensions changed')
+    if min(left, right, qr_rows[0], height - 12 - qr_rows[-1] - 1) < 4 * module_size:
+        raise AssertionError('QR symbol lost its four-module quiet zone')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stock', type=Path, required=True)
@@ -237,6 +261,7 @@ def main():
     if len(set(decoder_free)) != 1:
         raise AssertionError('Native indexed decoding leaks memory between pages')
     for index, frame in enumerate(frames[:3], 1):
+        check_qr_caption(frame, 240, 4)
         (args.output / f'page-{index}.indexed').write_bytes(frame)
     urls = transfer.encode_pages(decoded, transfer.DEFAULT_IMPORT_URL)
     images = [dict(text=url, rgb565=base64.b64encode(raw).decode()) for url, raw in zip(urls, rasters)]
@@ -364,6 +389,20 @@ def main():
     def compact_urls(data, height=240):
         return [bytes(cpu.mem_read(data + 12 + height * 30 + 153 * i, 153)).split(b'\0', 1)[0].decode()
                 for i in range(2)]
+
+    def check_compact_qr(data, urls, height, module_size):
+        frames = []
+        for url in urls:
+            frame = cpu.mem_read(data, 8 + height * 30)
+            check_qr_caption(frame, height, module_size)
+            raster = bytes(level for byte in frame[8:] for shift in range(7, -1, -1)
+                           for level in [0 if byte & (1 << shift) else 255] * 2)
+            raster += bytes([255]) * ((240 - height) * 240 * 2)
+            frames.append(dict(text=url, rgb565=base64.b64encode(raster).decode()))
+            call(0x2f4aa, word(input_device + 0x5c), 19)
+            call(symbols['kpd207_gui_tick'])
+        subprocess.run(['node', str(ROOT / 'tests/check_native.cjs')], input=json.dumps(frames), text=True, check=True)
+
     cpu.mem_write(context, b'\x05')
     buttons((20, 19), now + 900); buttons((20, 19), now + 1650)
     call(symbols['kpd207_gui_tick']); buttons((), now + 1651)
@@ -415,6 +454,7 @@ def main():
             or cable['fields']['spr_pdos']['status'] != 'not_requested'
             or cpu.mem_read(source + 42, 1) != b'\x02'):
         raise AssertionError('Valid standalone cable response did not produce an independent two-page QR')
+    check_compact_qr(cable_data, urls, 240, 4)
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     buttons((20, 19), now + 3300); buttons((20, 19), now + 4050)
     call(symbols['kpd207_gui_tick']); buttons((), now + 4051)
@@ -522,15 +562,7 @@ def main():
     manual = transfer.decode_pages(urls)
     if manual['origin'] != 'km003c_pps' or manual['fields']['pps_status']['raw'] != '3CFE0123FE000002':
         raise AssertionError('Manual PPS QR did not include the requested and reported values')
-    frames = []
-    for url in urls:
-        bits = cpu.mem_read(pixels + 8, 192 * 30)
-        raster = bytes(level for byte in bits for shift in range(7, -1, -1)
-                       for level in [0 if byte & (1 << shift) else 255] * 2)
-        raster += bytes([255]) * (48 * 240 * 2)
-        frames.append(dict(text=url, rgb565=base64.b64encode(raster).decode()))
-        call(0x2f4aa, word(input_device + 0x5c), 19); call(symbols['kpd207_gui_tick'])
-    subprocess.run(['node', str(ROOT / 'tests/check_native.cjs')], input=json.dumps(frames), text=True, check=True)
+    check_compact_qr(pixels, urls, 192, 3)
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     if word(input_device + 0x5c) != original_group:
         raise AssertionError('Manual PPS Exit did not restore the trigger group')

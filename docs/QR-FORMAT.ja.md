@@ -37,13 +37,11 @@ KPD1:<measurement-id>:<page>/<count>:<CRC32>:<base64url>
 - 同一内容の重複ページ・順不同を許可。測定ID・枚数・CRCの異なるページは混在拒否。
 - 全枚数の取得とCRC一致まで結果を表示しません。CRCは誤り検出であり認証ではありません。
 
-QRはVersion 8 / 誤り訂正M / byte mode。シンボル49×49、各辺4マスの白余白、
-1マス4ピクセルで228×228。240×240の中央に置くため外側をさらに6ピクセル空けます。
-QR表示中の余白には文字や模様を描かない構成です。ページ番号は別画面か、この外側の
-限られた領域を使う設計を検討します。
+QRはVersion 8 / 誤り訂正M / byte modeです。シンボルは49×49で、各辺に4マス以上の白い余白を確保します。
+本体はページ番号の上にQRを中央揃えで配置します。電源・ケーブルの結果は1マス4px、単独PPSは1マス3pxで表示します。
 
-参照: [DENSO WAVEの容量表](https://www.qrcode.com/en/about/versionPage/versionPage1_10.html)、
-[白余白](https://www.qrcode.com/en/howto/code.html)。容量上の成立と実機での読取率は別途検証します。
+仕様の参照先は [DENSO WAVEの容量表](https://www.qrcode.com/en/about/versionPage/versionPage1_10.html) と
+[白余白](https://www.qrcode.com/en/howto/code.html) です。読み取りの確認結果は [実機記録](HARDWARE-2026-11-05.ja.md) に記載しています。
 
 ## 内側のバイナリ
 
