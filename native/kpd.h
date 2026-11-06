@@ -73,6 +73,8 @@ bool kpd_page_url(const struct kpd_transfer *transfer, unsigned page,
 /* Called by GUI worker outside the capture lock and outside PD callbacks. */
 bool kpd_encode_page(const struct kpd_transfer *transfer, unsigned page,
                      struct kpd_workspace *work);
+/* Encode the bounded, NUL-terminated URL already in work->url. */
+bool kpd_encode_url(struct kpd_workspace *work);
 bool kpd_qr_pack(const struct kpd_workspace *work, uint8_t out[KPD_QR_PACKED]);
 /* One full RGB565 row in wire byte order, including quiet zone and margins.
  * GUI integration must use the stock display/bus ownership mechanism. */

@@ -102,11 +102,18 @@ bool kpd_encode_page(const struct kpd_transfer *t, unsigned page,
     if (work == NULL) return false;
     work->ready = false;
     if (!kpd_page_url(t, page, work->url)) return false;
+    return kpd_encode_url(work);
+}
+
+bool kpd_encode_url(struct kpd_workspace *work) {
+    if (work == NULL) return false;
+    work->ready = false;
     size_t length = 0;
-    while (work->url[length] != '\0') {
+    while (length < sizeof(work->url) && work->url[length] != '\0') {
         work->temp[length] = (uint8_t)work->url[length];
         ++length;
     }
+    if (length == 0 || length == sizeof(work->url)) return false;
     work->ready = qrcodegen_encodeBinary(work->temp, length, work->qr,
         qrcodegen_Ecc_MEDIUM, 8, 8, qrcodegen_Mask_AUTO, false);
     return work->ready;

@@ -35,9 +35,12 @@ typedef uint8_t (*signal_cb)(void *, uint8_t, void *);
 typedef bool (*keypad_cb)(void *, void *);
 struct image_descriptor { uint32_t header, size; const uint8_t *pixels; };
 struct screen_data {
-    struct kpd_transfer transfer;
-    uint8_t pixels[8 + 240 * 30];
+    _Alignas(uint32_t) uint8_t pixels[8 + 240 * 30];
+    uint8_t pages;
+    bool cable;
 };
+struct power_screen { struct screen_data display; struct kpd_transfer transfer; };
+struct cable_screen { struct screen_data display; char urls[2][KPD_URL_MAX + 1]; };
 struct cable_result {
     void *table;
     uint32_t vdos[4];
@@ -141,21 +144,23 @@ static bool cable_mode(void) {
 
 static bool render(struct screen_state *s) {
     struct screen_data *d = s->data;
-    /* This scratch only lives during rendering. The stock cable result table
-     * leaves less than 10 KiB in one native heap block. */
     struct kpd_workspace work;
     uint8_t row[480];
     memset(d->pixels, 0, sizeof(d->pixels));
     memset(d->pixels, 255, 4); /* Native 32-bit palette: opaque white, black */
     d->pixels[7] = 255;
-    if (!d->transfer.ready) {
+    if (!d->pages) {
         bool reading = s->info.attached && s->info.stage != KPD207_INFO_DONE;
         text(d, reading ? "READING PD" : s->random.phase == 3 ? "ID ERROR" : "NO DATA", 42, 80, 4);
         text(d, reading ? "PLEASE WAIT" : cable_mode() ? "RUN CABLE TEST" : "RUN PD TEST", 10, 120, 4);
         text(d, "EXIT CLOSE", 42, 170, 4);
         return true;
     }
-    if (!kpd_encode_page(&d->transfer, s->page, &work)) return false;
+    if (d->cable) {
+        const struct cable_screen *screen = (const struct cable_screen *)d;
+        memcpy(work.url, screen->urls[s->page - 1], sizeof(work.url));
+        if (!kpd_encode_url(&work)) return false;
+    } else if (!kpd_encode_page(&((struct power_screen *)d)->transfer, s->page, &work)) return false;
     for (unsigned y = 0; y < 240; ++y) {
         if (!kpd_qr_row(&work, y, row)) return false;
         for (unsigned x = 0; x < 240; ++x)
@@ -164,9 +169,9 @@ static bool render(struct screen_state *s) {
     }
     /* Up to 61 pages for the bounded maximum schema, outside quiet zone. */
     char label[12];
-    memcpy(label, d->transfer.binary[12] == KPD_KM003C_CABLE ? "CABLE 01/01" : "SAVED 01/01", sizeof(label));
+    memcpy(label, d->cable ? "CABLE 01/01" : "SAVED 01/01", sizeof(label));
     label[6] = (char)('0' + s->page / 10); label[7] = (char)('0' + s->page % 10);
-    label[9] = (char)('0' + d->transfer.pages / 10); label[10] = (char)('0' + d->transfer.pages % 10);
+    label[9] = (char)('0' + d->pages / 10); label[10] = (char)('0' + d->pages % 10);
     text(d, label, 98, 235, 1);
     return true;
 }
@@ -250,26 +255,44 @@ static void observe_cable(struct screen_state *s) {
     }
 }
 
+__attribute__((noinline))
+static bool freeze_cable(struct screen_state *s) {
+    /* Store only the two bounded URLs while the native result table is open. */
+    struct cable_screen *screen = (struct cable_screen *)s->data;
+    struct kpd_transfer transfer;
+    struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
+    memcpy(snapshot.id, s->cable.id, 8);
+    snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){
+        (const uint8_t *)s->cable.vdos, sizeof(s->cable.vdos), KPD_OBSERVED, true};
+    if (!kpd_freeze(&snapshot, &transfer) || transfer.pages != 2 ||
+        !kpd_page_url(&transfer, 1, screen->urls[0]) ||
+        !kpd_page_url(&transfer, 2, screen->urls[1])) return false;
+    screen->display.pages = transfer.pages;
+    return true;
+}
+
 static bool freeze_result(struct screen_state *s) {
-    if (cable_mode() && !s->cable.saved) return false;
     if (s->info.attached && s->info.stage != KPD207_INFO_DONE) return false;
-    if (s->prefer_cable) {
-        struct kpd_snapshot snapshot = {.origin = KPD_KM003C_CABLE, .capture_status = 1};
-        memcpy(snapshot.id, s->cable.id, 8);
-        snapshot.fields[KPD_CABLE_IDENTITY] = (struct kpd_field){
-            (const uint8_t *)s->cable.vdos, sizeof(s->cable.vdos), KPD_OBSERVED, true};
-        return kpd_freeze(&snapshot, &s->data->transfer);
+    if (s->data->cable) {
+        if (!s->prefer_cable || (cable_mode() && !s->cable.saved)) return false;
+        return freeze_cable(s);
     }
-    return kpd207_info_freeze(&s->capture, &s->info, &s->data->transfer);
+    struct kpd_transfer *transfer = &((struct power_screen *)s->data)->transfer;
+    if (!kpd207_info_freeze(&s->capture, &s->info, transfer)) return false;
+    s->data->pages = transfer->pages;
+    return true;
 }
 
 static void open_result(struct screen_state *s, void *layer) {
     if (!s->input) return;
     s->old_group = *(void **)((uint8_t *)s->input + 0x5c);
-    s->data = mem_alloc(sizeof(*s->data));
+    bool cable = cable_mode() || (s->prefer_cable && !s->info.attached);
+    s->data = mem_alloc(cable ? sizeof(struct cable_screen) : sizeof(struct power_screen));
     if (!s->data) return;
     s->page = 1;
-    memset(&s->data->transfer, 0, sizeof(s->data->transfer));
+    s->data->pages = 0;
+    s->data->cable = cable;
+    if (!cable) memset(&((struct power_screen *)s->data)->transfer, 0, sizeof(struct kpd_transfer));
     (void)freeze_result(s);
     if (!render(s)) goto failed;
     s->descriptor.header = 7u | (240u << 10) | (240u << 21); /* INDEXED_1BIT */
@@ -318,7 +341,7 @@ void kpd207_gui_screen_tick(void) {
     kpd207_information_tick(&s->info, &s->capture, now);
     if (!held && s->info.frozen) s->prefer_cable = false;
     observe_cable(s);
-    if (s->data && !s->data->transfer.ready && freeze_result(s)) {
+    if (s->data && !s->data->pages && freeze_result(s)) {
         if (render(s)) obj_invalidate(s->image);
         else close_screen(s);
     }
@@ -328,8 +351,8 @@ void kpd207_gui_screen_tick(void) {
         if (action == 4 && !s->data) { open_result(s, layer); return; }
         if (!s->data) return;
         if (action == 3) { close_screen(s); return; }
-        if (!s->data->transfer.ready) return;
-        unsigned pages = s->data->transfer.pages;
+        if (!s->data->pages) return;
+        unsigned pages = s->data->pages;
         s->page = action == 1 ? s->page % pages + 1 : (s->page + pages - 2) % pages + 1;
         if (render(s)) obj_invalidate(s->image);
         else close_screen(s);

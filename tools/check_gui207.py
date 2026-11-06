@@ -163,7 +163,7 @@ def main():
     if word(input_device + 0x5c) == original_group:
         raise AssertionError('Native keypad did not enter QR group')
     # No capture: it must be an informational screen, never a demo QR.
-    frozen = pixels - 2672
+    frozen = pixels + 7212
     if cpu.mem_read(frozen + 2671, 1) != b'\0' or cpu.mem_read(frozen, 4) == b'KPD1':
         raise AssertionError('Empty screen contains an invented QR capture')
     call(0x2f4aa, word(input_device + 0x5c), 27)
@@ -198,8 +198,8 @@ def main():
     image = call(0x34cd0, layer, 0)
     source = call(0x30574, image)
     header, size, pixels = struct.unpack('<III', cpu.mem_read(source, 12))
-    # Descriptor points to the screen_data pixels, after the frozen transfer.
-    frozen = pixels - 2672
+    # Descriptor points to the screen_data pixels, before the frozen transfer.
+    frozen = pixels + 7212
     binary_length = struct.unpack('<H', cpu.mem_read(frozen + 2668, 2))[0]
     decoded = transfer.unpack(bytes(cpu.mem_read(frozen, binary_length)))
     if decoded['origin'] != 'km003c' or decoded['fields']['spr_pdos']['raw'] != spr.hex().upper() or decoded['fields']['epr_pdos']['raw'] != epr.hex().upper():
@@ -286,7 +286,7 @@ def main():
     buttons((20, 19), 8100); buttons((20, 19), 8850)
     call(symbols['kpd207_gui_tick']); buttons((), 8851)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    pixels = word(source + 8); frozen = pixels - 2672
+    pixels = word(source + 8); frozen = pixels + 7212
     if cpu.mem_read(frozen + 2671, 1) != b'\0':
         raise AssertionError('In-progress information capture was exported prematurely')
     events = json.loads((ROOT / 'tests/fixtures/stock-pd32-events.json').read_text())
@@ -334,7 +334,7 @@ def main():
     buttons((20, 19), now + 100); buttons((20, 19), now + 850)
     call(symbols['kpd207_gui_tick']); buttons((), now + 851)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    reopened = word(source + 8) - 2672
+    reopened = word(source + 8) + 7212
     if bytes(cpu.mem_read(reopened, binary_length)) != owned_binary:
         raise AssertionError('Information result changed after idle/reopen')
     if transfer.unpack(bytes(cpu.mem_read(reopened, binary_length)))['measurement_id'] != owned_id:
@@ -365,41 +365,38 @@ def main():
     buttons((20, 19), now + 900); buttons((20, 19), now + 1650)
     call(symbols['kpd207_gui_tick']); buttons((), now + 1651)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    cable_data = word(source + 8) - 2672
-    if cpu.mem_read(cable_data + 2671, 1) != b'\0':
+    cable_data = word(source + 8)
+    if cpu.mem_read(cable_data + 7208, 1) != b'\0':
         raise AssertionError('Zero Identity qualified a cable result')
     cpu.mem_write(context, b'\x04')
     call(symbols['kpd207_gui_tick'])
     # Set a valid native result after a new scan, with PD cache still empty.
     cpu.mem_write(0x21002100 + 48 + 24, b'\x010x18000000\0')
     cpu.mem_write(0x21002100 + 4 * 48 + 24, b'\x010x00082650\0')
-    call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
-    buttons((20, 19), now + 1700); buttons((20, 19), now + 2450)
-    call(symbols['kpd207_gui_tick']); buttons((), now + 2451)
-    image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    if word(source + 8) == 0 or bytes(cpu.mem_read(word(source + 8) - 2672, binary_length)) != owned_binary:
+    call(symbols['kpd207_gui_tick'])
+    if cpu.mem_read(source + 2560, 1) != b'\0':
         raise AssertionError('A stale table in non-cable mode replaced the PD result')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(context, b'\x05')
     buttons((20, 19), now + 2500); buttons((20, 19), now + 3250)
     call(symbols['kpd207_gui_tick']); buttons((), now + 3251)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    cable_data = word(source + 8) - 2672
-    call(symbols['kpd207_gui_tick'])
-    cable_length = struct.unpack('<H', cpu.mem_read(cable_data + 2668, 2))[0]
-    cable_binary = bytes(cpu.mem_read(cable_data, cable_length))
-    cable = transfer.unpack(cable_binary)
+    cable_data = word(source + 8)
+    def cable_urls(data):
+        return [bytes(cpu.mem_read(data + 7212 + 153 * i, 153)).split(b'\0', 1)[0].decode()
+                for i in range(2)]
+    urls = cable_urls(cable_data)
+    cable = transfer.decode_pages(urls)
     if (cable['origin'] != 'km003c_cable' or cable['measurement_id'] == owned_id
             or cable['fields']['cable_identity']['raw'] != '00000018000000000000000050260800'
             or cable['fields']['spr_pdos']['status'] != 'not_requested'
-            or cpu.mem_read(cable_data + 2670, 1) != b'\x02'):
+            or cpu.mem_read(cable_data + 7208, 1) != b'\x02'):
         raise AssertionError('Valid standalone cable response did not produce an independent two-page QR')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     buttons((20, 19), now + 3300); buttons((20, 19), now + 4050)
     call(symbols['kpd207_gui_tick']); buttons((), now + 4051)
     image = call(0x34cd0, layer, 0); source = call(0x30574, image)
-    reopened_cable = word(source + 8) - 2672
-    if bytes(cpu.mem_read(reopened_cable, cable_length)) != cable_binary:
+    if cable_urls(word(source + 8)) != urls:
         raise AssertionError('Reopen changed the standalone cable QR')
     call(0x2f4aa, word(input_device + 0x5c), 27); call(symbols['kpd207_gui_tick'])
     cpu.mem_write(0x1fffacd8, struct.pack('<I', old_modal))
